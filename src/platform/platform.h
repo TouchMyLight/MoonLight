@@ -106,6 +106,8 @@ void pauseLoop();
 void delayMs(uint32_t ms);
 /// Blocking busy-wait for a sub-ms protocol gap such as the WS2812 latch, up to a few hundred µs.
 void delayUs(uint32_t us);
+/// Reset the task watchdog on behalf of the calling task, for an intentionally long synchronous operation; a no-op where there is none (desktop) or the caller isn't subscribed.
+void feedWatchdog();
 /// Total free heap, internal plus PSRAM where the target has it.
 size_t freeHeap();
 /// Free internal RAM, which is what the stack, HTTP and WiFi reserve is checked against.
@@ -279,6 +281,29 @@ bool fsWriteStream(const char* path, FsWriteSrc src, void* user);
 using FsListCb = void(*)(const char* name, bool isDir, uint32_t sizeBytes, void* user);
 /// List one level of `dir`, calling `cb` per child.
 void fsList(const char* dir, FsListCb cb, void* user);
+
+// A second, independent mount (microSD, FAT) alongside LittleFS, same shapes as fsXxx above; inert wherever hasSdCard is false.
+bool sdMount();                                               // idempotent; false if no card/slot
+void sdUnmount();
+bool sdMkdir(const char* path);                               // mkdir -p; no error if exists
+bool sdExists(const char* path);
+bool sdRemove(const char* path);                              // file or empty dir
+/// Read a whole file; bytes read, or -1 on error, null-terminated on success.
+int  sdRead(const char* path, char* buf, size_t maxLen);
+/// A file's size in bytes, or -1 when it is missing or not a file.
+long sdSize(const char* path);
+/// Read up to `len` bytes at `offset`; bytes read, 0 at the end, -1 on error.
+int  sdReadAt(const char* path, long offset, char* buf, size_t len);
+/// Write a whole file atomically, through a temporary and a rename.
+bool sdWriteAtomic(const char* path, const char* data, size_t len);
+/// Write a file atomically from `src`, pulling it in chunks; false on abort or a write failure.
+bool sdWriteStream(const char* path, FsWriteSrc src, void* user);
+/// List one level of `dir`, calling `cb` per child.
+void sdList(const char* dir, FsListCb cb, void* user);
+/// Card bytes used, or 0 when unmounted.
+size_t sdUsed();
+/// Card bytes total, or 0 when unmounted.
+size_t sdTotal();
 
 // Network: ESP32 only, stubs on desktop.
 /// Override the per-chip default pin and PHY map with a board's own, before ethInit.

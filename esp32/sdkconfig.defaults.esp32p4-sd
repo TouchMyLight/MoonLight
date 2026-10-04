@@ -1,0 +1,16 @@
+# Waveshare ESP32-P4-ETH: onboard microSD slot.
+#   Board: https://www.waveshare.com/esp32-p4-eth.htm
+#   Wiki:  http://www.waveshare.com/wiki/ESP32-P4-ETH
+#   Schematic: datasheet/ESP32-P4-ETH/ESP32-P4-ETH-datasheet.pdf
+#
+# Layered onto sdkconfig.defaults + sdkconfig.defaults.esp32p4rev1-eth +
+# sdkconfig.defaults.esp32p4-es8311 by moondeck/build/build_esp32.py — same
+# firmware image as the board's audio support, not a separate variant.
+#
+# Sets the Kconfig symbol declared in main/Kconfig.projbuild, which
+# src/platform/esp32/platform_esp32_sdmmc.cpp and
+# src/platform/esp32/platform_config.h read to enable the 4-bit SDMMC mount
+# on GPIO43/44/39-42 (+ the GPIO45 power switch). See MM_P4_SD's own help
+# text for why this is a separate opt-in: most other P4 boards have no
+# microSD slot.
+CONFIG_MM_P4_SD=y

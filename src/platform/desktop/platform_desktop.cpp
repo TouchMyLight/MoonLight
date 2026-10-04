@@ -412,6 +412,8 @@ void delayUs(uint32_t us) {
     std::this_thread::sleep_for(std::chrono::microseconds(us));
 }
 
+void feedWatchdog() {}   // no task watchdog on desktop
+
 void pauseLoop() {
     // Sleep to a frame BUDGET rather than a fixed nap: @xref{the-render-sleeps-to-a-frame-budget|why yielding alone spins a core}.
     static constexpr auto kFrameBudget = std::chrono::microseconds(4000);
@@ -1063,6 +1065,21 @@ size_t filesystemTotal() {
     // Desktop has no fixed quota; report a notional 384 KB to match the 4MB ESP32 partition.
     return 384 * 1024;
 }
+
+// SD card stubs (hasSdCard is false on every desktop build; SdCardModule never calls these — kept only so the sdXxx symbols a board-only module references still link into every target).
+bool sdMount() { return false; }
+void sdUnmount() {}
+bool sdMkdir(const char*) { return false; }
+bool sdExists(const char*) { return false; }
+bool sdRemove(const char*) { return false; }
+int  sdRead(const char*, char*, size_t) { return -1; }
+long sdSize(const char*) { return -1; }
+int  sdReadAt(const char*, long, char*, size_t) { return -1; }
+bool sdWriteAtomic(const char*, const char*, size_t) { return false; }
+bool sdWriteStream(const char*, FsWriteSrc, void*) { return false; }
+void sdList(const char*, FsListCb, void*) {}
+size_t sdUsed() { return 0; }
+size_t sdTotal() { return 0; }
 
 // Network stubs (desktop has no WiFi/Ethernet hardware)
 

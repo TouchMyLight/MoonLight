@@ -44,6 +44,7 @@ class Scheduler;
 ///
 /// The File Manager reads and writes through `GET|POST /api/file?path=`, and lists, creates and removes through `/api/dir?path=`.
 /// The path rides the query, so a filesystem operation carries its target in the request rather than in a stored control.
+/// SD Card (boards with a slot) is the same shape on its own mount: `GET|POST /api/sdfile?path=`, list/create/remove through `/api/sddir?path=`.
 ///
 /// Every JSON response streams through a `JsonSink`, so there is no fixed-buffer ceiling and a tree of any size serializes correctly.
 ///
@@ -458,6 +459,19 @@ private:
     void handleMakeDir(platform::TcpConnection& conn, const char* query);      // POST /api/dir?path=
     void handleRemoveEntry(platform::TcpConnection& conn, const char* query);  // DELETE /api/dir?path=
 
+    // SD Card: the same six ops as the File Manager above, against platform::sdXxx instead of platform::fsXxx — a second mount, not a parameter on these, see SdCardModule.h.
+    void serveSdFileContents(platform::TcpConnection& conn, const char* query);
+    void streamSdFile(platform::TcpConnection& conn, const char* path, const char* mime,
+                      const char* extraHeaders);
+    void handleWriteSdFile(platform::TcpConnection& conn, const char* query,
+                           const char* initialBody, size_t initialLen, size_t contentLen);
+    void serveSdDirListing(platform::TcpConnection& conn, const char* query);
+    void handleMakeSdDir(platform::TcpConnection& conn, const char* query);
+    void handleRemoveSdEntry(platform::TcpConnection& conn, const char* query);
+public:
+    /// Delete `path` and everything under it, on the SD mount; `depth` bounding the walk, same algorithm and same public+static shape as removeRecursive.
+    static bool removeRecursiveSd(const char* path, uint8_t depth = 0);
+private:
     // JSON state
     void serveState(platform::TcpConnection& conn);
     void buildStateJson(JsonSink& sink);

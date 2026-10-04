@@ -24,6 +24,15 @@
 /// The 60-second whole-request cap was sized for a 256 KB file and aborted a real firmware push at about 87%, so the firmware path carries its own ceiling.
 /// Three minutes covers 1.5 MB at a poor-but-real 10 KB/s with margin, and deliberately no more, because this cap also bounds the worst-case render freeze.
 ///
+/// ## Why SD uploads get no hard ceiling
+///
+/// The SD route's own sanity cap (`kSdUploadMax`) is FAT32's actual per-file limit, 4 GiB − 1, not an arbitrary small number — a real external-storage file can legitimately be that large, unlike a config or firmware image.
+/// A transfer anywhere near that size, at realistic card-write and network speeds, can run minutes to tens of minutes, and unlike a firmware push (which reboots the device, making a brief freeze an acceptable trade) an SD upload has no such excuse to stay short.
+/// Rather than pick an arbitrary ceiling that would reject a legitimate large file outright, `kSdUploadHardMs` is set to half of `UINT32_MAX` (~24.8 days), which is close enough to "unbounded" for any real transfer while staying inside the millis() rollover window the existing wraparound-safe comparison already assumes — no sentinel value or special-cased comparison needed.
+/// The render freeze for the full duration of such an upload is accepted as a consequence of this choice, not a secondary bug: a user uploading a multi-gigabyte file to external storage already knows it will take a while.
+/// A freeze was the expected cost; a REBOOT partway through was not, and the bench found one: past roughly ten seconds blocked in `uploadPull`'s socket-wait loop, ESP-IDF's own task watchdog aborted the task (and rebooted the device) because nothing had called `esp_task_wdt_reset()` in that long.
+/// `platform::feedWatchdog()` in that loop is the fix — a no-op on desktop and a no-op for a task that isn't subscribed, so it is safe to call unconditionally rather than gating it on which build this is.
+///
 /// ## Why the WLED shim reports a sentinel version
 ///
 /// The `ver` field is a sentinel, not the MoonLight version.
@@ -188,54 +197,73 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
 
     // If headers arrived but the body is still in flight, read the rest. read() is non-blocking (-1 = nothing pending yet), so the body can land a TCP segment after the headers: wait briefly between empty reads (the same bounded retry as the header phase) instead of breaking on the first -1, which would route a TRUNCATED body into the permissive JSON helpers (a silent partial control write). If the full declared body still hasn't arrived within the budget, reject with 400 rather than process it.
     auto* headerEnd = std::strstr(req, "\r\n\r\n");
-    int contentLen = 0;   // declared body length (0 if no Content-Length); used by the streaming route
+    size_t contentLen = 0;   // declared body length (0 if no Content-Length); used by the streaming route
     bool hasContentLen = false;   // header PRESENT (an explicit 0 is a legitimate empty write)
     if (headerEnd) {
         auto* clh = findHeaderCI(req, "Content-Length:");
         if (clh) {
             hasContentLen = true;
+            // The SD route gets its own, much larger ceiling: FAT32's actual per-file limit (4 GiB − 1), since a real external-storage file can legitimately be that large.
+            // Every other route (config, scripts, firmware) keeps the original firmware-sized ceiling.
+            const bool isSdFileRoute = std::strncmp(req, "POST /api/sdfile", 16) == 0;
+            constexpr unsigned long kContentLenMaxDefault = 8UL * 1024 * 1024;
+            constexpr unsigned long kContentLenMaxSd = 4UL * 1024 * 1024 * 1024 - 1;
+            const unsigned long contentLenCeiling = isSdFileRoute ? kContentLenMaxSd : kContentLenMaxDefault;
             // Bounded parse (not atoi): a malformed/negative/overflowing Content-Length must not flow downstream, where it's cast to size_t.
-            // A negative int would become a huge length that UploadSource/handleFirmwareUpload would treat as "gigabytes still to come".
-            // We reject anything that isn't a clean unsigned integer: strtol with an end pointer catches non-numeric, trailing junk ("123abc"), and ERANGE overflow.
-            // Then we reject negative and clamp to a firmware-sized ceiling (8 MB > any image we flash), returning 400 rather than acting on it.
+            // We reject anything that isn't a clean unsigned integer: strtoul with an end pointer catches non-numeric, trailing junk ("123abc"), and ERANGE overflow.
+            // strtoul itself accepts a leading '-' (wrapping it into a huge unsigned value per the C standard), so that's rejected explicitly rather than relying on a sign check after the fact.
             // The value ends at CR/LF/space or the string end.
-            constexpr long kContentLenMax = 8L * 1024 * 1024;
             const char* valStart = clh + 15;
             while (*valStart == ' ' || *valStart == '\t') valStart++;   // skip OWS after the colon
+            const bool negative = (*valStart == '-');
             char* valEnd = nullptr;
             errno = 0;
-            const long parsed = std::strtol(valStart, &valEnd, 10);
+            const unsigned long parsed = std::strtoul(valStart, &valEnd, 10);
             const bool consumedDigits = valEnd != valStart;
             const bool endsCleanly = *valEnd == '\r' || *valEnd == '\n' || *valEnd == ' ' ||
                                      *valEnd == '\t' || *valEnd == '\0';
-            if (!consumedDigits || !endsCleanly || errno == ERANGE ||
-                parsed < 0 || parsed > kContentLenMax) {
+            if (negative || !consumedDigits || !endsCleanly || errno == ERANGE) {
                 sendResponse(conn, 400, "application/json",
                              "{\"error\":\"invalid content-length\"}");
                 return;
             }
-            contentLen = static_cast<int>(parsed);
-            int headerSize = static_cast<int>(headerEnd + 4 - req);
-            int bodyNeeded = headerSize + contentLen;
-            // Only the STREAMING routes (/api/file, /api/firmware/upload, the MoonBase update) may carry a body larger than buf: they take the buffered prefix and pull the remainder straight off the socket.
+            if (parsed > contentLenCeiling) {
+                // A real reason, not a bare "invalid": this is a legitimately-formed length that's simply over the ceiling, and the SD route's ceiling IS the medium's own FAT32 limit.
+                // Same wording handleWriteSdFile's own (now unreachable past this gate) cap check uses, so a client sees one consistent reason either way.
+                sendResponse(conn, 413, "application/json",
+                             isSdFileRoute ? "{\"error\":\"file exceeds the 4 GiB FAT32 limit\"}"
+                                           : "{\"error\":\"request body too large\"}");
+                return;
+            }
+            contentLen = static_cast<size_t>(parsed);
+            const size_t headerSize = static_cast<size_t>(headerEnd + 4 - req);
+            // Only the STREAMING routes (/api/file, /api/sdfile, /api/firmware/upload, the MoonBase update) may carry a body larger than buf: they take the buffered prefix and pull the remainder straight off the socket.
             // For every OTHER route the body is parsed whole from buf, so a body over the buffer must be REJECTED (413), not truncated.
             // A capped read would parse a JSON prefix as if complete (its own bodyNeeded check wouldn't fire, since the cap makes the short read "enough").
             // The request line sits at the start of req; a substring match on the path is sufficient.
             const bool isStreamingRoute =
                 std::strncmp(req, "POST /api/file", 14) == 0 ||
+                isSdFileRoute ||
                 std::strncmp(req, "POST /api/firmware/upload", 25) == 0 ||
                 // A MoonBase image is ~750 KB and streams the same way.
                 // Omitted at first, and the bench caught it: the 413 fires before the handler, so the route answered "body too large" for every image, valid or not.
                 // The trailing space matters: without it this prefix also matches `moonbase-update-url`, whose body is a small JSON object that must be read WHOLE.
                 // Treating it as streaming truncates it to the prefix buffer.
                 std::strncmp(req, "POST /api/firmware/moonbase-update ", 35) == 0;
-            if (bodyNeeded > static_cast<int>(sizeof(buf) - 1)) {
+            constexpr size_t kBufCap = sizeof(buf) - 1;
+            // Subtraction, not `headerSize + contentLen`: contentLen can approach the SD route's 4 GiB ceiling, right at size_t's own 32-bit max on this target, and that sum would wrap around to a small value — reading as a tiny body and letting a huge declared length slip past the "too large for this buffer" check below.
+            // headerSize is always <= kBufCap (it was already read into buf), so kBufCap - headerSize cannot underflow.
+            const bool bodyFitsBuffer = contentLen <= (kBufCap - headerSize);
+            int bodyNeeded;
+            if (!bodyFitsBuffer) {
                 if (!isStreamingRoute) {
                     sendResponse(conn, 413, "application/json",
                                  "{\"error\":\"request body too large\"}");
                     return;
                 }
-                bodyNeeded = static_cast<int>(sizeof(buf) - 1);   // streaming: buffer the prefix only
+                bodyNeeded = static_cast<int>(kBufCap);   // streaming: buffer the prefix only
+            } else {
+                bodyNeeded = static_cast<int>(headerSize + contentLen);   // proven <= kBufCap above
             }
             for (int empties = 0; totalRead < bodyNeeded;) {
                 int n = conn.read(buf + totalRead, sizeof(buf) - 1 - totalRead);
@@ -298,6 +326,9 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
         else if (std::strcmp(path, "/api/dir") == 0) serveDirListing(conn, queryStart ? queryStart + 1 : "");
         // File Manager: GET /api/file?path=<rel> → the file's contents (text, size-capped).
         else if (std::strcmp(path, "/api/file") == 0) serveFileContents(conn, queryStart ? queryStart + 1 : "");
+        // SD Card: GET /api/sddir?path=<rel>[&hidden=1] / GET /api/sdfile?path=<rel> — same shape, the SD mount.
+        else if (std::strcmp(path, "/api/sddir") == 0) serveSdDirListing(conn, queryStart ? queryStart + 1 : "");
+        else if (std::strcmp(path, "/api/sdfile") == 0) serveSdFileContents(conn, queryStart ? queryStart + 1 : "");
         // HLS: GET /hls/<file> → the segments the HlsDriver's ffmpeg writes under /.hls/, with video MIME types and no-cache (the playlist mutates every second).
         else if (std::strncmp(path, "/hls/", 5) == 0) serveHlsFile(conn, path + 5);
         // WLED-compatibility shim: the native WLED apps (and Home Assistant's WLED integration) discover a device via mDNS `_wled._tcp` then VALIDATE it by GETting /json/info and checking it's WLED-shaped. Serving a minimal WLED-compatible info makes a MoonLight device appear in those apps: and is a useful independent cross-check that our mDNS advertise resolves.
@@ -340,8 +371,18 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
                 sendResponse(conn, 411, "application/json", "{\"error\":\"length required\"}");
                 return;
             }
-            handleWriteFile(conn, queryStart ? queryStart + 1 : "", body, initialLen,
-                            static_cast<size_t>(contentLen));
+            handleWriteFile(conn, queryStart ? queryStart + 1 : "", body, initialLen, contentLen);
+        } else if (std::strcmp(path, "/api/sdfile") == 0 && body) {
+            // SD Card: POST /api/sdfile?path=<rel> — same shape as /api/file, onto the SD mount.
+            const size_t initialLen = static_cast<size_t>(totalRead) - static_cast<size_t>(body - req);
+            if (!hasContentLen) {
+                sendResponse(conn, 411, "application/json", "{\"error\":\"length required\"}");
+                return;
+            }
+            handleWriteSdFile(conn, queryStart ? queryStart + 1 : "", body, initialLen, contentLen);
+        } else if (std::strcmp(path, "/api/sddir") == 0) {
+            // SD Card: POST /api/sddir?path=<rel> → mkdir on the SD mount.
+            handleMakeSdDir(conn, queryStart ? queryStart + 1 : "");
         } else if (std::strcmp(path, "/api/dir") == 0) {
             // File Manager: POST /api/dir?path=<rel> → mkdir. The path is the whole operation (a create is a filesystem action, not a stored control), so it rides the request query : same path-as-query shape as /api/file, no persisted control holds it.
             handleMakeDir(conn, queryStart ? queryStart + 1 : "");
@@ -391,11 +432,11 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
                 sendResponse(conn, 411, "application/json", "{\"error\":\"length required\"}");
                 return;
             }
-            handleMoonBaseUpload(conn, body, initialLen, static_cast<size_t>(contentLen));
+            handleMoonBaseUpload(conn, body, initialLen, contentLen);
         } else if (std::strcmp(path, "/api/firmware/upload") == 0 && body) {
             // OTA from an uploaded .bin body (no URL, no host to serve it): the browser POSTs the firmware image straight to the device, which streams it into the OTA partition. Same streamed-body handling as /api/file (initial buffered bytes + socket remainder).
             const size_t initialLen = static_cast<size_t>(totalRead) - static_cast<size_t>(body - req);
-            handleFirmwareUpload(conn, body, initialLen, static_cast<size_t>(contentLen));
+            handleFirmwareUpload(conn, body, initialLen, contentLen);
         } else {
             sendResponse(conn, 404, "text/plain", "Not found");
         }
@@ -416,6 +457,9 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
         } else if (std::strcmp(path, "/api/dir") == 0) {
             // File Manager: DELETE /api/dir?path=<rel> → remove a file or empty dir.
             handleRemoveEntry(conn, queryStart ? queryStart + 1 : "");
+        } else if (std::strcmp(path, "/api/sddir") == 0) {
+            // SD Card: DELETE /api/sddir?path=<rel> → remove a file or dir on the SD mount.
+            handleRemoveSdEntry(conn, queryStart ? queryStart + 1 : "");
         } else {
             sendResponse(conn, 404, "text/plain", "Not found");
         }
@@ -483,7 +527,11 @@ void HttpServerModule::sendResponse(platform::TcpConnection& conn, int status, c
 // The path comes as a query param `path=<rel>`; parseFilePath vets it (reject "..", root at the mount): the single traversal guard shared by every filesystem HTTP entry (read, write, dir listing, mkdir, delete).
 //
 // Read + write both stream: the write pulls the request body chunk-by-chunk straight to the file (fsWriteStream), the read pulls the file into a size-fit buffer: so a file of any size up- and downloads intact without a fixed cap. kUploadMax is a per-request sanity ceiling; a legit upload is additionally rejected up front if it wouldn't fit the free filesystem space.
-static constexpr size_t kUploadMax = 256 * 1024;   // 256 KB: sanity bound on one upload
+static constexpr size_t kUploadMax = 256 * 1024;   // 256 KB: sanity bound on one upload — the internal flash partition is this small itself
+
+// The SD mount is real external storage, not a config partition: its own sanity ceiling is FAT32's actual per-file limit (4 GiB − 1), not an arbitrary small number.
+// The free-space check above still does the real rejecting for anything that wouldn't fit the card.
+static constexpr size_t kSdUploadMax = 4UL * 1024 * 1024 * 1024 - 1;
 
 // Copy the `path=` query value into `out` (decoding %XX and '+' minimally), rooted at the mount.
 // Returns false on a missing/empty path or a ".." traversal attempt.
@@ -606,6 +654,41 @@ void HttpServerModule::handleMakeDir(platform::TcpConnection& conn, const char* 
     else sendResponse(conn, 500, "application/json", "{\"error\":\"mkdir failed\"}");
 }
 
+// GET /api/sddir?path=<rel>[&hidden=1] → one SD directory level, same JSON shape as /api/dir.
+// dirListTrampoline is filesystem-agnostic (sink + flags only), so it's reused as-is.
+void HttpServerModule::serveSdDirListing(platform::TcpConnection& conn, const char* query) {
+    char path[160];
+    if (!parseFilePath(query, path, sizeof(path))) {
+        sendResponse(conn, 400, "application/json", "{\"error\":\"bad path\"}");
+        return;
+    }
+    const char* header =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "\r\n";
+    conn.write(reinterpret_cast<const uint8_t*>(header), std::strlen(header));
+
+    JsonSink sink(conn);
+    DirListState st{&sink, query && std::strstr(query, "hidden=1") != nullptr, true};
+    sink.append("[");
+    platform::sdList(path, &dirListTrampoline, &st);
+    sink.append("]");
+    sink.flush();
+}
+
+// POST /api/sddir?path=<rel> → mkdir on the SD mount.
+void HttpServerModule::handleMakeSdDir(platform::TcpConnection& conn, const char* query) {
+    char path[160];
+    if (!parseFilePath(query, path, sizeof(path))) {
+        sendResponse(conn, 400, "application/json", "{\"error\":\"bad path\"}");
+        return;
+    }
+    if (platform::sdMkdir(path)) sendResponse(conn, 200, "application/json", "{\"ok\":true}");
+    else sendResponse(conn, 500, "application/json", "{\"error\":\"mkdir failed\"}");
+}
+
 namespace {
 
 /// One directory level, collected. fsList hands entries to a C callback while the directory is open.
@@ -663,6 +746,46 @@ bool HttpServerModule::removeRecursive(const char* path, uint8_t depth) {
     // A level wider than kMax leaves entries behind, so the directory is still not empty. Report the failure rather than a false success: the caller can delete again to take the next batch.
     if (!ok || lvl.truncated) return false;
     return platform::fsRemove(path);
+}
+
+// SD counterpart of removeRecursive, same algorithm against platform::sdXxx.
+// DirLevel/collectEntry are filesystem-agnostic (they only see what the callback hands them), so they're shared as-is.
+bool HttpServerModule::removeRecursiveSd(const char* path, uint8_t depth) {
+    if (depth > 8) return false;
+    if (platform::sdRemove(path)) return true;
+
+    auto* raw = platform::alloc(sizeof(DirLevel));
+    if (!raw) return false;
+    DirLevel* lvlp = new (raw) DirLevel;
+    DirLevel& lvl = *lvlp;
+    struct Freer { DirLevel* p; ~Freer() { p->~DirLevel(); platform::free(p); } } freer{lvlp};
+    platform::sdList(path, &collectEntry, &lvl);
+    if (lvl.count == 0) return false;
+
+    bool ok = true;
+    for (uint8_t i = 0; i < lvl.count; i++) {
+        char child[192];
+        const int n = std::snprintf(child, sizeof(child), "%s/%s", path, lvl.names[i]);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(child)) { ok = false; continue; }
+        if (!removeRecursiveSd(child, static_cast<uint8_t>(depth + 1))) ok = false;
+    }
+    if (!ok || lvl.truncated) return false;
+    return platform::sdRemove(path);
+}
+
+// DELETE /api/sddir?path=<rel> → remove a file, or a directory AND everything in it, on the SD mount.
+// Same shape as handleRemoveEntry, minus applyFileChanged: an SD file is never device config and never a MoonLive script, so there is nothing for that call to reconfigure or track.
+void HttpServerModule::handleRemoveSdEntry(platform::TcpConnection& conn, const char* query) {
+    char path[160];
+    if (!parseFilePath(query, path, sizeof(path))) {
+        sendResponse(conn, 400, "application/json", "{\"error\":\"bad path\"}");
+        return;
+    }
+    if (removeRecursiveSd(path)) {
+        sendResponse(conn, 200, "application/json", "{\"ok\":true}");
+    } else {
+        sendResponse(conn, 500, "application/json", "{\"error\":\"delete failed\"}");
+    }
 }
 
 // DELETE /api/dir?path=<rel> → remove a file, or a directory AND everything in it.
@@ -768,6 +891,10 @@ constexpr uint32_t kUploadHardMs = 60000;   // absolute whole-request ceiling (a
 // This bounds a SLOW transfer where kUploadIdleMs bounds a stalled one, and it stays as tight as a real upload allows because it also caps the render freeze.
 // @xref{why-firmware-gets-a-larger-ceiling}
 constexpr uint32_t kFirmwareUploadHardMs = 180000;  // 3 min absolute ceiling for a firmware push
+// An SD file can be large enough (up to kSdUploadMax) that even a generous ceiling would reject a legitimate transfer at realistic card-write/network speeds, and unlike a firmware push, nothing about an SD upload needs to stay brief.
+// No practical ceiling: half of UINT32_MAX (~24.8 days) keeps the SAME wraparound-safe millis() comparison the other two ceilings use, rather than a sentinel/special case, while being indistinguishable from "unbounded" for any real transfer.
+// @xref{why-an-upload-needs-two-timeouts}
+constexpr uint32_t kSdUploadHardMs = UINT32_MAX / 2;
 struct UploadSource {
     platform::TcpConnection* conn;
     const char* initial;      // body bytes already read into the request buffer
@@ -801,6 +928,9 @@ size_t uploadPull(char* out, size_t cap, void* user, bool* abort) {
         if (r == 0) { *abort = true; return 0; }                 // peer closed with body remaining
         // Idle timeout (the hard whole-request cap is enforced at the top of uploadPull, so it covers the pacing case this wait loop can't). Both compares are wraparound-safe.
         if (static_cast<int32_t>(platform::millis() - deadline) >= 0) { *abort = true; return 0; }
+        // A multi-minute SD transfer spends most of its time right here, waiting on the next TCP segment: without this, the task watchdog aborts (and reboots) the whole device partway through a real upload.
+        // Found on the bench, not in review. @xref{why-sd-uploads-get-no-hard-ceiling}
+        platform::feedWatchdog();
         platform::delayMs(1);
     }
 }
@@ -834,6 +964,72 @@ void HttpServerModule::handleWriteFile(platform::TcpConnection& conn, const char
                      platform::millis() + kUploadHardMs};
     if (platform::fsWriteStream(path, &uploadPull, &src)) {
         applyFileChanged(path);   // the write succeeded, so what was built from it may be stale
+        sendResponse(conn, 200, "application/json", "{\"ok\":true}");
+    } else {
+        sendResponse(conn, 500, "application/json", "{\"error\":\"write failed\"}");
+    }
+}
+
+// Stream one sd-mounted file straight to the socket, same shape as streamFsFile (platform::sdReadAt instead of fsReadAt).
+void HttpServerModule::streamSdFile(platform::TcpConnection& conn, const char* path,
+                                    const char* mime, const char* extraHeaders) {
+    const long size = platform::sdSize(path);
+    if (size < 0) { sendResponse(conn, 404, "application/json", "{\"error\":\"not found\"}"); return; }
+    char header[224];
+    const int hn = std::snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n%s"
+        "Connection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n", mime, size, extraHeaders);
+    if (!conn.write(reinterpret_cast<const uint8_t*>(header), static_cast<size_t>(hn))) return;
+    char chunk[1024];
+    for (long offset = 0; offset < size;) {
+        const size_t want = static_cast<size_t>(size - offset) < sizeof(chunk)
+                          ? static_cast<size_t>(size - offset) : sizeof(chunk);
+        const int got = platform::sdReadAt(path, offset, chunk, want);
+        if (got <= 0) break;
+        if (!conn.write(reinterpret_cast<const uint8_t*>(chunk), static_cast<size_t>(got))) return;
+        offset += got;
+    }
+}
+
+// GET /api/sdfile?path=<rel> → an SD file's contents, same shape as serveFileContents.
+void HttpServerModule::serveSdFileContents(platform::TcpConnection& conn, const char* query) {
+    char path[160];
+    if (!parseFilePath(query, path, sizeof(path))) {
+        sendResponse(conn, 400, "application/json", "{\"error\":\"bad path\"}");
+        return;
+    }
+    streamSdFile(conn, path, "text/plain", "");
+}
+
+// POST /api/sdfile?path=<rel>, body → streamed atomic write onto the SD mount.
+// Same shape as handleWriteFile (reuses UploadSource/uploadPull — they only see a byte source, not which filesystem it feeds), minus applyFileChanged: see handleRemoveSdEntry for why.
+void HttpServerModule::handleWriteSdFile(platform::TcpConnection& conn, const char* query,
+                                         const char* initialBody, size_t initialLen, size_t contentLen) {
+    char path[160];
+    if (!parseFilePath(query, path, sizeof(path))) {
+        sendResponse(conn, 400, "application/json", "{\"error\":\"bad path\"}");
+        return;
+    }
+    if (contentLen > kSdUploadMax) {
+        sendResponse(conn, 413, "application/json",
+                     "{\"error\":\"file exceeds the 4 GiB FAT32 limit\"}");
+        return;
+    }
+    const size_t total = platform::sdTotal();
+    const size_t used = platform::sdUsed();
+    const size_t freeBytes = total > used ? total - used : 0;
+    if (total > 0 && contentLen > freeBytes) {
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "{\"error\":\"not enough space (%lu free)\"}",
+                      static_cast<unsigned long>(freeBytes));
+        sendResponse(conn, 507, "application/json", msg);
+        return;
+    }
+    const size_t initial = initialLen < contentLen ? initialLen : contentLen;
+    // No practical time ceiling here, unlike handleWriteFile's kUploadHardMs: @xref{why-an-upload-needs-two-timeouts}.
+    UploadSource src{&conn, initialBody, initial, contentLen,
+                     platform::millis() + kSdUploadHardMs};
+    if (platform::sdWriteStream(path, &uploadPull, &src)) {
         sendResponse(conn, 200, "application/json", "{\"ok\":true}");
     } else {
         sendResponse(conn, 500, "application/json", "{\"error\":\"write failed\"}");

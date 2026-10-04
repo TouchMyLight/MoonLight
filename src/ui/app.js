@@ -1995,6 +1995,12 @@ function createCard(mod, depth) {
         renderFileManager(mod, controlsHost);
     }
 
+    // SD Card: the same tree panel, on the SD mount's own routes (/api/sddir, /api/sdfile) — a
+    // separate panel from the flash File Manager above, not a second root on its tree.
+    if (mod.type === "SdCardModule") {
+        renderSdCardManager(mod, controlsHost);
+    }
+
     // Contributing earns the answer back on the card that asked for consent, so the charts render
     // here rather than anywhere else. They are drawn empty until consent is on.
     if (mod.type === "MoonStatsModule") {
@@ -6053,7 +6059,8 @@ function setupUpdateBadge() {
 function fmSize(n) {
     if (n < 1024) return n + " B";
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-    return (n / (1024 * 1024)).toFixed(1) + " MB";
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+    return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";   // real SD content routinely reaches this
 }
 
 // Per-module File Manager UI state, kept across state refreshes (the DOM is rebuilt on refetch, but
@@ -6125,8 +6132,11 @@ async function mlDownloadScript(name, group) {
     if (!save.ok) throw new Error(await errorMessage(save));
 }
 
-async function fmFetchDir(absPath, hidden) {
-    const res = await fetch("/api/dir?path=" + encodeURIComponent(absPath) + (hidden ? "&hidden=1" : ""));
+// `apiKind`: "" for the internal-flash File Manager (/api/dir, /api/file), "sd" for the SD Card
+// panel (/api/sddir, /api/sdfile) — the two independent mounts HttpServerModule serves, see
+// SdCardModule.h. Every fmXxx helper below threads the same parameter the same way.
+async function fmFetchDir(absPath, hidden, apiKind = "") {
+    const res = await fetch(`/api/${apiKind}dir?path=` + encodeURIComponent(absPath) + (hidden ? "&hidden=1" : ""));
     if (!res.ok) throw new Error(await errorMessage(res));
     const rows = await res.json();
     return Array.isArray(rows) ? rows : [];
@@ -6546,7 +6556,10 @@ function renderMoonTalk(host, mod) {
     load(false);
 }
 
-function renderFileManager(mod, host) {
+// `apiKind`: "" for the internal-flash File Manager, "sd" for the SD Card panel — see fmFetchDir's
+// doc comment. renderSdCardManager is the thin "sd" entry point; every internal self-call below
+// threads the same value through so a re-render stays on the same mount.
+function renderFileManager(mod, host, apiKind = "") {
     const ctrl = (n) => (mod.controls || []).find(c => c.name === n);
     const st = fmState(mod);
     // The toggle is UI-owned: seed it from the persisted control on first render, then `st` is the
@@ -6577,7 +6590,7 @@ function renderFileManager(mod, host) {
     hiddenBox.addEventListener("change", () => {
         st.showHidden = hiddenBox.checked;                    // UI-owned source of truth
         sendControl(mod.name, "show hidden", hiddenBox.checked);   // persist (best-effort, no await)
-        renderFileManager(mod, host);                         // re-list with the new filter
+        renderFileManager(mod, host, apiKind);                         // re-list with the new filter
     });
     const track = document.createElement("span");
     track.className = "switch-track";
@@ -6603,7 +6616,7 @@ function renderFileManager(mod, host) {
             // Include every ancestor; include the clicked node only if it's a directory.
             if (i < segs.length - 1 || isDir) st.expanded.add(p);
         }
-        renderFileManager(mod, host);
+        renderFileManager(mod, host, apiKind);
     };
 
     // Breadcrumb of the selected path, on its OWN row above the toolbar (a deep path wraps freely
@@ -6653,12 +6666,12 @@ function renderFileManager(mod, host) {
     const runOp = async (op, targetPath) => {
         const method = op === "delete" ? "DELETE" : "POST";
         try {
-            const res = await fetch("/api/dir?path=" + encodeURIComponent(targetPath), { method });
+            const res = await fetch(`/api/${apiKind}dir?path=` + encodeURIComponent(targetPath), { method });
             if (!res.ok) alert(`${op} failed: ${await errorMessage(res)}`);
         } catch (err) {   // a network error (offline / reset) would otherwise be an unhandled rejection
             alert(`${op} failed: ${err.message || err}`);
         }
-        renderFileManager(mod, host);  // rebuild the tree from /api/dir (fresh listing), success or handled failure
+        renderFileManager(mod, host, apiKind);  // rebuild the tree from /api/dir (fresh listing), success or handled failure
     };
 
     // A new file/folder is created inside the selected node if it's a folder, else next to it (in
@@ -6690,10 +6703,10 @@ function renderFileManager(mod, host) {
         const base = createBase();
         const name = (prompt("New file name in " + base + ":") || "").trim();
         if (!name) return;             // blank or whitespace-only → no-op
-        const r = await fmCreateFile(base, name);
+        const r = await fmCreateFile(base, name, "", apiKind);
         if (!r.ok) { alert("create file failed: " + r.message); return; }
         st.expanded.add(base);         // reveal the new file
-        renderFileManager(mod, host);  // re-list from disk
+        renderFileManager(mod, host, apiKind);  // re-list from disk
     });
     bar.appendChild(newFileBtn);
 
@@ -6714,8 +6727,8 @@ function renderFileManager(mod, host) {
         if (!files.length) return;
         const base = createBase();
         st.expanded.add(base);                    // reveal the destination folder
-        const skipped = await fmDropUpload(base, files);
-        renderFileManager(mod, host);             // re-list from disk
+        const skipped = await fmDropUpload(base, files, apiKind, showUploadProgress);
+        renderFileManager(mod, host, apiKind);             // re-list from disk
         if (skipped.length) alert("Not uploaded:\n" + skipped.join("\n"));
     });
     upBtn.addEventListener("click", () => upInput.click());
@@ -6726,37 +6739,43 @@ function renderFileManager(mod, host) {
     // whole filesystem into one JSON bundle (fmBackupConfig); Restore uploads a bundle back and
     // reports what didn't carry over (fmRestoreConfig). Restore overwrites config, so it shares
     // the delete button's armed double-press.
-    const bakBtn = document.createElement("button");
-    bakBtn.className = "fm-tool fm-tool--icon";
-    bakBtn.textContent = "⤓";
-    bakBtn.title = "Backup device config, download every file (config, scripts, presets) as one JSON bundle. Keep it private: it contains the WiFi password.";
-    bakBtn.addEventListener("click", async () => {
-        bakBtn.disabled = true;
-        bakBtn.textContent = "…";   // the walk takes seconds; show work in progress at once
-        try { await fmBackupConfig(); }
-        catch (err) { alert("Backup failed: " + err.message); }
-        finally { bakBtn.disabled = false; bakBtn.textContent = "⤓"; }
-    });
-    bar.appendChild(bakBtn);
+    //
+    // Flash only (apiKind === ""): a backup/restore bundle IS the device's own config (controls,
+    // scripts, presets, the WiFi password) — SD content has no equivalent concept to bundle or
+    // restore, so the SD panel skips both buttons rather than offering ones that don't apply.
+    if (!apiKind) {
+        const bakBtn = document.createElement("button");
+        bakBtn.className = "fm-tool fm-tool--icon";
+        bakBtn.textContent = "⤓";
+        bakBtn.title = "Backup device config, download every file (config, scripts, presets) as one JSON bundle. Keep it private: it contains the WiFi password.";
+        bakBtn.addEventListener("click", async () => {
+            bakBtn.disabled = true;
+            bakBtn.textContent = "…";   // the walk takes seconds; show work in progress at once
+            try { await fmBackupConfig(); }
+            catch (err) { alert("Backup failed: " + err.message); }
+            finally { bakBtn.disabled = false; bakBtn.textContent = "⤓"; }
+        });
+        bar.appendChild(bakBtn);
 
-    const restInput = document.createElement("input");
-    restInput.type = "file";
-    restInput.accept = ".json,application/json";
-    restInput.style.display = "none";
-    restInput.addEventListener("change", async () => {
-        const file = (restInput.files || [])[0];
-        restInput.value = "";
-        if (!file) return;
-        try { await fmRestoreConfig(file, () => renderFileManager(mod, host)); }
-        catch (err) { alert("Restore failed: " + err.message); }
-    });
-    const restBtn = document.createElement("button");
-    restBtn.className = "fm-tool fm-tool--icon fm-tool--danger";
-    restBtn.textContent = "⟲";
-    restBtn.title = "Restore config from a backup bundle, overwrites the device's files, then reports anything that didn't carry over";
-    armPressTwice(restBtn, () => restInput.click(), { armedText: "✓" });
-    bar.appendChild(restBtn);
-    bar.appendChild(restInput);
+        const restInput = document.createElement("input");
+        restInput.type = "file";
+        restInput.accept = ".json,application/json";
+        restInput.style.display = "none";
+        restInput.addEventListener("change", async () => {
+            const file = (restInput.files || [])[0];
+            restInput.value = "";
+            if (!file) return;
+            try { await fmRestoreConfig(file, () => renderFileManager(mod, host, apiKind)); }
+            catch (err) { alert("Restore failed: " + err.message); }
+        });
+        const restBtn = document.createElement("button");
+        restBtn.className = "fm-tool fm-tool--icon fm-tool--danger";
+        restBtn.textContent = "⟲";
+        restBtn.title = "Restore config from a backup bundle, overwrites the device's files, then reports anything that didn't carry over";
+        armPressTwice(restBtn, () => restInput.click(), { armedText: "✓" });
+        bar.appendChild(restBtn);
+        bar.appendChild(restInput);
+    }
 
     const delBtn = document.createElement("button");
     delBtn.className = "fm-tool fm-tool--icon fm-tool--danger";
@@ -6772,22 +6791,41 @@ function renderFileManager(mod, host) {
     refBtn.className = "fm-tool fm-tool--icon";
     refBtn.textContent = "⟳";
     refBtn.title = "Refresh";
-    refBtn.addEventListener("click", () => renderFileManager(mod, host));
+    refBtn.addEventListener("click", () => renderFileManager(mod, host, apiKind));
     bar.appendChild(refBtn);
     panel.appendChild(bar);
+
+    // Upload-in-progress bar: hidden until a transfer is actually streaming, shared by the picker
+    // button and every drag-drop target below (one bar regardless of which one started it). The
+    // panel is rebuilt wholesale on the next renderFileManager (both call sites do this once
+    // fmDropUpload resolves), so there is no separate "hide when done" path to maintain here.
+    const uploadRow = document.createElement("div");
+    uploadRow.className = "fm-upload-progress";
+    uploadRow.style.display = "none";
+    const uploadBar = document.createElement("progress");
+    const uploadLabel = document.createElement("span");
+    uploadRow.append(uploadBar, uploadLabel);
+    panel.appendChild(uploadRow);
+    const showUploadProgress = (loaded, total) => {
+        if (total <= 0) return;
+        uploadRow.style.display = "flex";
+        uploadBar.max = total;
+        uploadBar.value = loaded;
+        uploadLabel.textContent = fmSize(loaded) + " / " + fmSize(total);
+    };
 
     // The tree. Root ("/") is always present and expanded; its children populate asynchronously.
     const tree = document.createElement("div");
     tree.className = "fm-tree";
     // Dropping desktop files onto the tree's empty space uploads them into root.
-    fmMakeDropTarget(tree, "/", hidden, () => renderFileManager(mod, host), st);
+    fmMakeDropTarget(tree, "/", hidden, () => renderFileManager(mod, host, apiKind), st, apiKind, showUploadProgress);
     panel.appendChild(tree);
 
     // Render one directory's children into `container` at `depth`, recursing into expanded folders.
     const renderChildren = async (dirPath, container, depth) => {
         let rows;
         try {
-            rows = await fmFetchDir(dirPath, hidden);
+            rows = await fmFetchDir(dirPath, hidden, apiKind);
         } catch (err) {
             const e = document.createElement("div");
             e.className = "fm-empty";
@@ -6843,7 +6881,7 @@ function renderFileManager(mod, host) {
                 dl.className = "fm-dl";
                 dl.textContent = "⤓";
                 dl.title = "download";
-                dl.href = "/api/file?path=" + encodeURIComponent(childPath);
+                dl.href = `/api/${apiKind}file?path=` + encodeURIComponent(childPath);
                 dl.setAttribute("download", entry.name);
                 dl.addEventListener("click", (ev) => ev.stopPropagation());   // don't select/open
                 rowEl.appendChild(dl);
@@ -6862,7 +6900,7 @@ function renderFileManager(mod, host) {
                     // re-render is needed.
                     if (isOpen) st.expanded.delete(childPath);
                     else st.expanded.add(childPath);
-                    renderFileManager(mod, host);
+                    renderFileManager(mod, host, apiKind);
                 } else {
                     // A file click only moves the selection: update the highlight IN PLACE, never
                     // re-render. A re-render here would destroy this row mid-gesture, so the dblclick
@@ -6876,13 +6914,13 @@ function renderFileManager(mod, host) {
             if (!entry.isDir) {
                 rowEl.addEventListener("dblclick", (ev) => {
                     ev.stopPropagation();
-                    openFileEditor(childPath, entry.size);   // size lets the editor detect a truncated read
+                    openFileEditor(childPath, entry.size, undefined, apiKind);   // size lets the editor detect a truncated read
                 });
             }
 
             // Drag-drop upload target: dropping desktop files onto a FOLDER row uploads them into
             // that folder (tier 1: text/config ≤8KB: see fmDropUpload).
-            if (entry.isDir) fmMakeDropTarget(rowEl, childPath, hidden, () => renderFileManager(mod, host), st);
+            if (entry.isDir) fmMakeDropTarget(rowEl, childPath, hidden, () => renderFileManager(mod, host, apiKind), st, apiKind, showUploadProgress);
             container.appendChild(rowEl);
 
             // Recurse into an expanded folder (its own indented sub-container).
@@ -6897,9 +6935,10 @@ function renderFileManager(mod, host) {
 
     renderChildren("/", tree, 0);
 
-    // Filesystem usage bar below the tree: the File Manager's own `filesystem` control (used /
-    // total bytes from the platform). Absent (e.g. desktop fs total 0) → nothing shown.
-    const fsCtrl = fmFilesystemUsage(mod);
+    // Usage bar below the tree: `filesystem` for the flash File Manager, `card` for the SD panel
+    // (SdCardModule's control of the same shape). Absent (e.g. desktop fs total 0, or an SD card
+    // not mounted) → nothing shown.
+    const fsCtrl = fmFilesystemUsage(mod, apiKind ? "card" : "filesystem");
     if (fsCtrl) {
         const usage = document.createElement("div");
         usage.className = "fm-usage";
@@ -6930,11 +6969,19 @@ function renderFileManager(mod, host) {
     }
 }
 
-// The File Manager's own `filesystem` usage progress control (used/total bytes), or null if the
-// platform reports no partition. Rendered as the bar below the tree; skipped in the generic control
-// loop so it appears only here.
-function fmFilesystemUsage(mod) {
-    return (mod?.controls || []).find(c => c.name === "filesystem") || null;
+// SD Card: the same tree panel as the flash File Manager, on the SD mount's own routes
+// (/api/sddir, /api/sdfile — see fmFetchDir's doc comment) — a separate panel, not a second root
+// grafted onto renderFileManager's own tree. SdCardModule defines no `lastSaved` control, so that
+// readout simply doesn't appear here; no SD-specific branch was needed for it.
+function renderSdCardManager(mod, host) {
+    renderFileManager(mod, host, "sd");
+}
+
+// A module's usage progress control (used/total bytes) by name — `filesystem` for the File
+// Manager, `card` for the SD Card panel — or null if absent. Rendered as the bar below the tree;
+// skipped in the generic control loop so it appears only here.
+function fmFilesystemUsage(mod, controlName) {
+    return (mod?.controls || []).find(c => c.name === controlName) || null;
 }
 
 // Format a file's text for the editor, by extension. JSON is re-indented (2 spaces) so the persisted
@@ -6961,13 +7008,14 @@ function joinFsPath(dir, name) {
 }
 
 // Drag-drop upload (desktop → device). The device streams the body straight to the file (any size,
-// binary-safe), so the only client-side bound is a sanity cap matching the device's kUploadMax; a
+// binary-safe), so the only client-side bound is a sanity cap matching the device's own ceiling; a
 // file over it is skipped with a visible note (no silent drop). A too-big-for-free-space file is
 // also rejected device-side with a "not enough space" message.
-const FM_UPLOAD_CAP = 256 * 1024;   // matches HttpServerModule::kUploadMax
+const FM_UPLOAD_CAP = 256 * 1024;                  // matches HttpServerModule::kUploadMax (flash)
+const FM_SD_UPLOAD_CAP = 4 * 1024 * 1024 * 1024 - 1;   // matches kSdUploadMax: FAT32's own per-file limit
 
 // Wire an element as a drop target that uploads dropped files into `destDir`, then re-renders.
-function fmMakeDropTarget(el, destDir, hidden, rerender, st) {
+function fmMakeDropTarget(el, destDir, hidden, rerender, st, apiKind = "", onProgress = null) {
     el.addEventListener("dragover", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -6983,14 +7031,12 @@ function fmMakeDropTarget(el, destDir, hidden, rerender, st) {
         el.classList.remove("fm-row--drop");
         const files = Array.from(e.dataTransfer?.files || []);
         if (!files.length) return;
-        const skipped = await fmDropUpload(destDir, files);
+        const skipped = await fmDropUpload(destDir, files, apiKind, onProgress);
         if (destDir !== "/") st.expanded.add(destDir);   // reveal where they landed
         rerender();
-        if (skipped.length) {
-            // Report what wasn't uploaded (over the size cap or a write error) rather than dropping
-            // it silently. The limit is derived from FM_UPLOAD_CAP so the text never drifts from it.
-            alert(`Not uploaded (over ${fmSize(FM_UPLOAD_CAP)} or failed):\n` + skipped.join("\n"));
-        }
+        // Report what wasn't uploaded (over the size cap or a write error) rather than dropping it
+        // silently. Each line already names its own reason (fmDropUpload), so the header needs none.
+        if (skipped.length) alert("Not uploaded:\n" + skipped.join("\n"));
     });
 }
 
@@ -7142,21 +7188,38 @@ function fmShowRestoreReport(entries, refresh, offerRestart) {
 }
 
 
-// Upload each dropped file into destDir via /api/file. Returns the names skipped (too big / failed)
-// so the caller can report them. The File blob is sent as the body directly: the browser streams
-// its raw bytes (binary-safe), matching the device's streamed, byte-exact write.
-async function fmDropUpload(destDir, files) {
+// Upload each dropped file into destDir via /api/file (or /api/sdfile). Returns the names skipped
+// (too big / failed) so the caller can report them. uploadWithProgress sends the File as the body
+// directly (binary-safe, byte-exact), the same xhr.upload.onprogress real-progress path the
+// firmware installer uses — fetch() cannot report upload progress at all.
+// `onProgress(doneBytes, totalBytes)`, when given, fires as each file streams and again after each
+// one finishes, so a multi-file batch shows one bar climbing smoothly across the whole set rather
+// than resetting to 0 per file. totalBytes excludes files skipped up front for being over the cap:
+// they're never sent, so counting their bytes would leave the bar short of 100% at the end.
+async function fmDropUpload(destDir, files, apiKind = "", onProgress = null) {
     const skipped = [];
+    const cap = apiKind === "sd" ? FM_SD_UPLOAD_CAP : FM_UPLOAD_CAP;
+    const uploadable = [];
     for (const file of files) {
-        if (file.size > FM_UPLOAD_CAP) { skipped.push(file.name + " (" + fmSize(file.size) + ")"); continue; }
-        try {
-            const res = await fetch("/api/file?path=" + encodeURIComponent(joinFsPath(destDir, file.name)), {
-                method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
-            });
-            if (!res.ok) throw new Error(await errorMessage(res));   // surfaces "not enough space (N free)" etc.
-        } catch (err) {
-            skipped.push(file.name + " (" + err.message + ")");
+        if (file.size > cap) {
+            skipped.push(file.name + " (" + fmSize(file.size) + " exceeds the " + fmSize(cap) + " limit)");
+        } else {
+            uploadable.push(file);
         }
+    }
+    const totalBytes = uploadable.reduce((sum, f) => sum + f.size, 0);
+    let doneBytes = 0;
+    for (const file of uploadable) {
+        try {
+            const route = `/api/${apiKind}file?path=` + encodeURIComponent(joinFsPath(destDir, file.name));
+            await uploadWithProgress(route, file, {
+                progress: (loaded) => { if (onProgress) onProgress(doneBytes + loaded, totalBytes); },
+            });
+        } catch (err) {
+            skipped.push(file.name + " (" + err.message + ")");   // surfaces "not enough space (N free)" etc.
+        }
+        doneBytes += file.size;
+        if (onProgress) onProgress(doneBytes, totalBytes);
     }
     return skipped;
 }
@@ -7170,9 +7233,9 @@ async function fmDropUpload(destDir, files) {
 
 // Load `relPath` into `textarea`. Returns {readOnly, message}: read-only when the file cannot be
 // safely round-tripped through a <textarea>, so a save can never write a lossy copy back over it.
-async function fmLoadInto(textarea, relPath, expectedSize, signal) {
+async function fmLoadInto(textarea, relPath, expectedSize, signal, apiKind = "") {
     try {
-        const res = await fetch("/api/file?path=" + encodeURIComponent(relPath), { signal });
+        const res = await fetch(`/api/${apiKind}file?path=` + encodeURIComponent(relPath), { signal });
         // Surface the server's own message (e.g. "not found") rather than a bare status code.
         if (!res.ok) throw new Error(await errorMessage(res));
         const text = await res.text();
@@ -7208,9 +7271,9 @@ async function fmLoadInto(textarea, relPath, expectedSize, signal) {
 }
 
 // Write `textarea`'s contents to `relPath`. Returns {ok, message}.
-async function fmSaveFrom(textarea, relPath) {
+async function fmSaveFrom(textarea, relPath, apiKind = "") {
     try {
-        const res = await fetch("/api/file?path=" + encodeURIComponent(relPath), {
+        const res = await fetch(`/api/${apiKind}file?path=` + encodeURIComponent(relPath), {
             method: "POST",
             headers: { "Content-Type": "text/plain" },
             body: textarea.value,
@@ -7226,10 +7289,10 @@ async function fmSaveFrom(textarea, relPath) {
 // saves through. A control whose module declares a template passes it here, so a new file is a
 // working example rather than a blank one: for anything the device parses, empty is invalid, and
 // the first thing a new file would say is an error message.
-async function fmCreateFile(dir, name, content = "") {
+async function fmCreateFile(dir, name, content = "", apiKind = "") {
     const filePath = joinFsPath(dir, name);
     try {
-        const res = await fetch("/api/file?path=" + encodeURIComponent(filePath), {
+        const res = await fetch(`/api/${apiKind}file?path=` + encodeURIComponent(filePath), {
             method: "POST", headers: { "Content-Type": "text/plain" }, body: content,
         });
         if (!res.ok) throw new Error(await errorMessage(res));
@@ -7276,7 +7339,7 @@ function fmMountEditor(host, relPath, opts = {}) {
     // the user's own copy rather than overwrite what shipped. Defaults to writing back where it
     // read, which is what every other caller wants.
     const { expectedSize, onSaved, onDispose, sizeKey, saveButton, statusEl, savePath,
-            initialStatus } = opts;
+            initialStatus, apiKind = "" } = opts;
     const wrap = document.createElement("div");
     wrap.className = "fm-editor-pane";
     // The footer carries Save and the status line, UNLESS the host supplies both: a card already has
@@ -7461,7 +7524,7 @@ function fmMountEditor(host, relPath, opts = {}) {
                 setDirty(false);
                 return;
             }
-            const r = await fmSaveFrom(body, dest);
+            const r = await fmSaveFrom(body, dest, apiKind);
             status.textContent = r.message;
             // A failed write (no space, a vanished path) must not be silent. The modal shows it on
             // its status line; a host that supplied its own hidden one gets an alert, because the
@@ -7525,7 +7588,7 @@ function fmMountEditor(host, relPath, opts = {}) {
             showCaret();
             return;
         }
-        const r = await fmLoadInto(body, path, size, ac.signal);
+        const r = await fmLoadInto(body, path, size, ac.signal, apiKind);
         if (r.aborted || ac !== loadAbort) return;   // a newer load started: that one owns the pane
         // What arrived, so save() can tell a real edit from an untouched file. Only used when the
         // save destination differs from the read path (a factory script being forked).
@@ -7564,7 +7627,7 @@ function fmMountEditor(host, relPath, opts = {}) {
 
 // Open the shared editor in a modal, for the File Manager's tree rows. Uses the native <dialog>,
 // no bespoke overlay code, and mounts exactly the pane a card mounts inline.
-async function openFileEditor(relPath, expectedSize, moduleName) {
+async function openFileEditor(relPath, expectedSize, moduleName, apiKind = "") {
     const dlg = document.createElement("dialog");
     dlg.className = "fm-editor";
     dlg.innerHTML =
@@ -7578,7 +7641,7 @@ async function openFileEditor(relPath, expectedSize, moduleName) {
     // rendered by the card either way, and setStatusText marks every editor on that module. Without
     // a module name (the File Manager's own rows) nothing registers and the modal simply highlights.
     let unregister = () => {};
-    const ed = fmMountEditor(dlg, relPath, { expectedSize, onDispose: () => unregister() });
+    const ed = fmMountEditor(dlg, relPath, { expectedSize, apiKind, onDispose: () => unregister() });
     unregister = mlEditorAdd(moduleName, ed);
     // Mark it NOW, from the status already on the card: registration only catches the next update,
     // and a compile failure that happened before the modal opened would otherwise show unmarked

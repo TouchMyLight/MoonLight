@@ -176,6 +176,13 @@ constexpr CodecType audioCodecType = CodecType::None;
 constexpr AudioCodecPins audioCodecPins = { 0, 0, 0, 0 };
 #endif
 
+/// True on a board with a microSD slot wired (CONFIG_MM_P4_SD — the Waveshare ESP32-P4-ETH), read by SdCardModule to report "no SD hardware" cleanly rather than attempt a mount.
+#ifdef CONFIG_MM_P4_SD
+constexpr bool hasSdCard = true;
+#else
+constexpr bool hasSdCard = false;
+#endif
+
 // The Ethernet-only profile drops the WiFi components and defines this, there being no SDK switch.
 #ifdef MM_NO_WIFI
 constexpr bool hasWiFi = false;

@@ -291,15 +291,17 @@ FIRMWARES: dict[str, dict] = {
     "esp32p4rev1-eth-es8311": {
         "chip": "esp32p4",
         "fragments": ["sdkconfig.defaults", "sdkconfig.defaults.esp32p4rev1-eth",
-                      "sdkconfig.defaults.esp32p4-es8311"],
+                      "sdkconfig.defaults.esp32p4-es8311",
+                      "sdkconfig.defaults.esp32p4-sd"],
         "eth_only": True,
         "description": "Waveshare ESP32-P4-ETH — Ethernet only (IP101 PHY, same "
                        "pins as the P4-NANO) plus the board's onboard ES8311 audio "
-                       "codec (I2C GPIO7/8, I2S GPIO9-13), for P4 revisions 0.x/1.x "
-                       "ONLY. No WiFi combo yet (no on-board C6 co-processor "
-                       "question has been resolved for this board); follows the "
-                       "same fragment-stacking pattern as esp32p4rev1-eth-wifi if "
-                       "one is added later.",
+                       "codec (I2C GPIO7/8, I2S GPIO9-13) and microSD slot (4-bit "
+                       "SDMMC, GPIO39-45), for P4 revisions 0.x/1.x ONLY. No WiFi "
+                       "combo yet (no on-board C6 co-processor question has been "
+                       "resolved for this board); follows the same fragment-"
+                       "stacking pattern as esp32p4rev1-eth-wifi if one is added "
+                       "later.",
         "ships": True,
         "panel_cards": True,
     },

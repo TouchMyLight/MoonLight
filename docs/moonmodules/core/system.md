@@ -186,6 +186,22 @@ Known renames from [MIGRATING.md](../../reference/MIGRATING.md) apply before upl
 
 Detail: [technical](moxygen/FileManagerModule.md)
 
+<a id="sd-card"></a>
+
+### SD Card
+
+Browse and manage a board's microSD card — the SD counterpart to File Manager, on boards that carry a slot (the [Waveshare ESP32-P4-ETH](../../reference/hardware/esp32-p4-eth.md)). A separate panel over its own routes (`/api/sddir` + `/api/sdfile`), not a second root in the flash tree. Behavior: ⌄ details.
+
+<img src="../../assets/core/SdCardModule.png" width="300" alt="SD Card panel, folder tree + toolbar">
+
+- `file browser`: the panel itself: a folder tree, a toolbar and an inline text editor.
+- `show hidden`: reveal dot-prefixed files and folders.
+- `card`: read-only usage bar (used / total bytes, from the card's FAT filesystem).
+
+On a board with no SD hardware, or no card inserted, the panel reports why instead of a tree (the module's own status line: "no SD hardware on this build" or "mount failed — check the card is inserted and formatted FAT32").
+
+Detail: [technical](moxygen/SdCardModule.md)
+
 <a id="i2c-scan"></a>
 
 ### I2C scan
@@ -406,3 +422,6 @@ The panel is a lazy folder **tree** (each folder loads its children on first exp
 - Create / delete are HTTP calls (`POST` / `DELETE /api/dir?path=`), not controls, the path rides the request, so nothing is stored on the device per op.
 
 Last-modified dates (needs an NTP time source + LittleFS mtime), binary/large + folder upload, folder-as-zip download, and `.ml` syntax highlighting are backlogged ([backlog-core § File Manager follow-ups](../../work/future/backlog-core.md#file-manager-follow-ups)).
+
+## SD Card, details
+Same panel shape as File Manager — a lazy folder **tree**, drag-to-upload, an inline editor, create/delete as HTTP calls (`POST`/`DELETE /api/sddir?path=`) rather than controls — against the card's FAT filesystem instead of the internal LittleFS. Mounted once at boot (`platform::sdMount()`, which also powers the slot); a card swapped at runtime needs a reboot to pick up, the same contract the internal flash mount has.

@@ -184,6 +184,7 @@
 #include "core/services/InfraredService.h"
 #include "core/services/MoonLiveService.h"
 #include "core/system/FileManagerModule.h"
+#include "core/system/SdCardModule.h"
 #include "core/system/FirmwareUpdateModule.h"
 #include "core/system/MoonCloudModule.h"
 #include "core/system/MoonStatsModule.h"
@@ -353,6 +354,7 @@ void mm::registerModuleTypes() {
     mm::ModuleFactory::registerType<mm::InfraredService>("InfraredService", "core/services.md#infrared");
     mm::ModuleFactory::registerType<mm::MoonLiveService>("MoonLiveService", "core/services.md#moonliveservice");
     mm::ModuleFactory::registerType<mm::FileManagerModule>("FileManagerModule", "core/system.md#file-manager");
+    mm::ModuleFactory::registerType<mm::SdCardModule>("SdCardModule", "core/system.md#sd-card");
     mm::ModuleFactory::registerType<mm::FirmwareUpdateModule>("FirmwareUpdateModule", "core/system.md#firmware-update");
     mm::ModuleFactory::registerType<mm::MoonCloudModule>("MoonCloudModule", "core/system.md#mooncloud");
     mm::ModuleFactory::registerType<mm::MoonStatsModule>("MoonStatsModule", "core/system.md#stats");

@@ -77,6 +77,7 @@
 #include "esp_memory_utils.h"   // esp_ptr_external_ram — the ptrIsPsram residency probe
 #include "esp_cache.h"        // esp_cache_msync — I-cache sync after writing MoonLive code to IRAM
 #include "esp_system.h"
+#include "esp_task_wdt.h"     // feedWatchdog() — esp_task_wdt_reset()
 #include "esp_chip_info.h"
 #include "esp_cpu.h"       // esp_cpu_get_cycle_count — the cycleCount() seam
 #include "esp_mac.h"
@@ -232,6 +233,11 @@ void pauseLoop() {
 void delayUs(uint32_t us) {
     // Busy-wait, fine for the few-hundred-µs protocol gaps this exists for (e.g. the WS2812 inter-frame latch), off any latency-critical context.
     esp_rom_delay_us(us);
+}
+
+void feedWatchdog() {
+    // ESP_OK on a subscribed task, otherwise a harmless not-found: callers don't need to know which.
+    esp_task_wdt_reset();
 }
 
 void reboot() {

@@ -53,4 +53,18 @@ menu "MoonLight"
             esp32p4rev1-eth-es8311 build sets this, via
             sdkconfig.defaults.esp32p4-es8311.
 
+    config MM_P4_SD
+        bool "ESP32-P4: onboard microSD slot (Waveshare ESP32-P4-ETH)"
+        default n
+        help
+            Enables the 4-bit SDMMC mount (CLK/CMD/D0-D3 on GPIO43/44/39-42,
+            a GPIO45 power switch for the slot's VDD rail) for a P4 board that
+            actually carries a microSD slot, e.g. the Waveshare ESP32-P4-ETH.
+            No managed component is pulled — fatfs and the sdmmc driver are
+            already core ESP-IDF components in every build — this flag only
+            gates whether SdCardModule's mount is attempted, so a board with
+            no slot (the P4-NANO, the MHC-WLED shield) doesn't try one.
+            Set only by the esp32p4rev1-eth-es8311 build, via
+            sdkconfig.defaults.esp32p4-sd.
+
 endmenu

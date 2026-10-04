@@ -70,6 +70,9 @@ constexpr CodecType audioCodecType = CodecType::None;
 /// Unused, there being no codec to reach.
 constexpr AudioCodecPins audioCodecPins = { 0, 0, 0, 0 };
 
+/// False: no microSD slot on a host.
+constexpr bool hasSdCard = false;
+
 /// True, so the host compiles the WiFi path even though it ships stubs behind it.
 constexpr bool hasWiFi = true;
 

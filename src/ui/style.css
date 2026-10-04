@@ -1838,6 +1838,15 @@ body.cards-resizing {
 .fm-usage progress { flex: 1 1 auto; height: 8px; }
 .fm-usage-label { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 
+/* Upload-in-progress bar, same shape as .fm-usage: hidden until a button-pick or drag-drop upload
+   is actually streaming (fmDropUpload), one bar shared across however many files are in the batch. */
+.fm-upload-progress {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    font-size: 0.8rem; color: var(--fg-muted);
+}
+.fm-upload-progress progress { flex: 1 1 auto; height: 8px; }
+.fm-upload-progress span { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
 /* Asking before a MoonBase install: the app's own chrome, not the browser's. A native confirm()
    is the one box in this UI that cannot be styled, and it showed as a white system panel over a
    dark card. Same <dialog> element the editor uses, so Esc and the backdrop work unaided. */

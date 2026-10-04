@@ -46,9 +46,29 @@ On-chip EMAC → **IP101GRI** PHY → RJ45, **RMII** with a 25 MHz crystal, exte
 
 Catalog entry: `NetworkModule.ethBoard = "ESP32-P4-ETH"`, its own `kEthPresets` row in `NetworkModule.h` (not a silent alias of `"P4-NANO"`) — the pins read identical today, but a future correction to one board's preset shouldn't silently move the other.
 
+## microSD card (SDMMC, 4-bit)
+
+GPIO-matrix-routed (`CONFIG_SOC_SDMMC_USE_GPIO_MATRIX`), not the fixed IOMUX pins — read from the schematic:
+
+| Signal | GPIO |
+|---|---|
+| CLK | 43 |
+| CMD | 44 |
+| D0 | 39 |
+| D1 | 40 |
+| D2 | 41 |
+| D3 | 42 |
+| Card-power enable | 45 (gates a SI2301CDS P-channel load switch on the slot's VDD rail; LOW enables) |
+
+- **CMD/D0-D3's pull-ups ride on `ESP_LDO_VO4`** (the SoC's on-chip LDO channel 4, feeding the `VDDPST_5` IO power domain those pins live in) — separate from the card's own VDD rail above, and off by default. `sd_pwr_ctrl_new_on_chip_ldo()` (channel 4) powers it before the mount; skipping this leaves the bus unpowered regardless of GPIO45.
+- Gated behind `CONFIG_MM_P4_SD` (fragment `sdkconfig.defaults.esp32p4-sd`, on the same `esp32p4rev1-eth-es8311` firmware as the audio codec — one physical board, not a separate variant).
+- **Bench-verified end to end** 2026-10-04: mount, directory listing, read, write and delete all round-trip against a real card through `/api/sddir` + `/api/sdfile` (`SdCardModule`).
+- A slot built field-by-field (not from `SDMMC_SLOT_CONFIG_DEFAULT()`, which would misassign GPIO45 as an 8-bit data line) must explicitly set `.cd`/`.wp` to `SDMMC_SLOT_NO_CD`/`SDMMC_SLOT_NO_WP` — left zero-initialized, both default to GPIO0, and the driver reads that as a real write-protect line and rejects every write (`ESP_ERR_INVALID_STATE`) while reads and mount stay unaffected.
+- **FAT32 only, not exFAT.** ESP-IDF's bundled FatFs ships with exFAT compiled out (`FF_FS_EXFAT` is a hardcoded `0` in its vendored `ffconf.h`, not a Kconfig option, and not overridable via a compiler flag — the header's own `#define` always wins). Supporting it would mean vendoring and maintaining a project-local fork of the whole `fatfs` component, which hasn't been taken on. A card exceeding 32GB formatted exFAT by default needs reformatting to FAT32 before use here; the module's own status message says so on a failed mount.
+
 ## Other onboard features (not wired up by this branch)
 
-From the Waveshare wiki: MIPI-CSI (2-lane, OV5647-compatible), MIPI-DSI (2-lane, 5"/7"/8"/10.1" panels), SDIO 3.0 microSD slot, USB-C (native + UART bridge), BOOT/RESET buttons. None of these conflict with the audio (GPIO 7-13) or Ethernet (GPIO 28-31/49-52) pins above.
+From the Waveshare wiki: MIPI-CSI (2-lane, OV5647-compatible), MIPI-DSI (2-lane, 5"/7"/8"/10.1" panels), USB-C (native + UART bridge), BOOT/RESET buttons. None of these conflict with the audio (GPIO 7-13), Ethernet (GPIO 28-31/49-52) or SD card (GPIO 39-45) pins above.
 
 ## Free GPIO for user peripherals (LED strips)
 
@@ -58,6 +78,7 @@ Following the P4-NANO's own reference set (`ParallelLedDriver` default `pins="20
 |---|---|
 | Ethernet RMII (fixed silicon pads) | 28-31, 49-52 |
 | ES8311 audio (I²S + I²C) | 7-13 |
+| microSD (SDMMC + power switch) | 39-45 |
 | CSI/DSI accessory headers | share the I2C bus (7-8) plus their own dedicated MIPI diff-pairs |
 
-**Clear, following the P4-NANO's documented set**: 20-27, 32-33, 39-48 (the catalog's `ParallelLedDriver` default is `pins="20,21,22,23,24,25,26,27"`, same as the P4-NANO). GPIO 20/21 also appear as spare IO on this board's CSI header (same situation as the P4-NANO, which treats them as free LED pins regardless) — only relevant if a camera module is actually plugged in. See [gpio-usage.md § ESP32-P4](gpio-usage.md#esp32-p4) for the general P4 pin map this board extends.
+**Clear, following the P4-NANO's documented set**: 20-27, 32-33, 46-48 (the catalog's `ParallelLedDriver` default is `pins="20,21,22,23,24,25,26,27"`, same as the P4-NANO). GPIO 20/21 also appear as spare IO on this board's CSI header (same situation as the P4-NANO, which treats them as free LED pins regardless) — only relevant if a camera module is actually plugged in. GPIO 39-45 are no longer free on a board built with `CONFIG_MM_P4_SD` — see the microSD section above. See [gpio-usage.md § ESP32-P4](gpio-usage.md#esp32-p4) for the general P4 pin map this board extends.
