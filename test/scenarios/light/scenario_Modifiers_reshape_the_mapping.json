@@ -129,6 +129,17 @@
             "samples": [208]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 7,
+            "p95": 7,
+            "min": 7,
+            "max": 7,
+            "n": 1,
+            "samples": [7]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     },
@@ -212,6 +223,17 @@
             "samples": [167]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 9,
+            "p95": 9,
+            "min": 9,
+            "max": 9,
+            "n": 1,
+            "samples": [9]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     },
@@ -294,6 +316,17 @@
             "samples": [169]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 9,
+            "p95": 9,
+            "min": 9,
+            "max": 9,
+            "n": 1,
+            "samples": [9]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     },
@@ -369,6 +402,17 @@
             "samples": [160]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 8,
+            "p95": 8,
+            "min": 8,
+            "max": 8,
+            "n": 1,
+            "samples": [8]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     },
@@ -450,6 +494,17 @@
             "samples": [273]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 10,
+            "p95": 10,
+            "min": 10,
+            "max": 10,
+            "n": 1,
+            "samples": [10]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     },
@@ -532,6 +587,17 @@
             "samples": [164]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 8,
+            "p95": 8,
+            "min": 8,
+            "max": 8,
+            "n": 1,
+            "samples": [8]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     },
@@ -613,6 +679,17 @@
             "samples": [252]
           },
           "last_updated": "2026-09-30"
+        },
+        "desktop-linux": {
+          "tick_us": {
+            "p50": 8,
+            "p95": 8,
+            "min": 8,
+            "max": 8,
+            "n": 1,
+            "samples": [8]
+          },
+          "last_updated": "2026-10-05"
         }
       }
     }

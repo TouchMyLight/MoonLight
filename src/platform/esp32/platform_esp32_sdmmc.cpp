@@ -52,6 +52,7 @@
 #if SOC_SDMMC_IO_POWER_EXTERNAL
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #endif
+#include "miniz.h"   // the ROM-resident tinfl_decompress, for zlibInflateAll below — zero flash cost
 
 #include <cerrno>
 #include <cstdio>
@@ -319,6 +320,14 @@ size_t sdTotal() {
     return static_cast<size_t>(static_cast<uint64_t>(g_card->csd.capacity) * g_card->csd.sector_size);
 }
 
+// Each FSEQ v2 compressed block is its own complete zlib stream, so one mem-to-mem call decompresses it whole.
+bool zlibInflateAll(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstCap, size_t& outLen) {
+    const size_t n = tinfl_decompress_mem_to_mem(dst, dstCap, src, srcLen, TINFL_FLAG_PARSE_ZLIB_HEADER);
+    if (n == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) return false;
+    outLen = n;
+    return true;
+}
+
 }  // namespace mm::platform
 
 #else  // !MM_HAS_SDMMC — no SD slot on this target: inert stub.
@@ -337,6 +346,7 @@ bool sdWriteStream(const char*, FsWriteSrc, void*) { return false; }
 void sdList(const char*, FsListCb, void*) {}
 size_t sdUsed() { return 0; }
 size_t sdTotal() { return 0; }
+bool zlibInflateAll(const uint8_t*, size_t, uint8_t*, size_t, size_t&) { return false; }
 }  // namespace mm::platform
 
 #endif  // MM_HAS_SDMMC

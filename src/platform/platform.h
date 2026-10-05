@@ -305,6 +305,9 @@ size_t sdUsed();
 /// Card bytes total, or 0 when unmounted.
 size_t sdTotal();
 
+/// One-shot zlib inflate of one self-contained compressed block; `outLen` is set only on success.
+bool zlibInflateAll(const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstCap, size_t& outLen);
+
 // Network: ESP32 only, stubs on desktop.
 /// Override the per-chip default pin and PHY map with a board's own, before ethInit.
 void setEthConfig(const EthPinConfig& cfg);

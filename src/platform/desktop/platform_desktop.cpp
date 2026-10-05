@@ -1081,6 +1081,9 @@ void sdList(const char*, FsListCb, void*) {}
 size_t sdUsed() { return 0; }
 size_t sdTotal() { return 0; }
 
+// No decoder linked on desktop; the FSEQ player reports "unsupported" for a compressed file here.
+bool zlibInflateAll(const uint8_t*, size_t, uint8_t*, size_t, size_t&) { return false; }
+
 // Network stubs (desktop has no WiFi/Ethernet hardware)
 
 void setEthConfig(const EthPinConfig&) {}   // no eth on desktop; ethInit stubs false

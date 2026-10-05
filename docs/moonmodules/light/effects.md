@@ -1319,6 +1319,28 @@ Detail: [technical](moxygen/NetworkReceiveEffect.md)
 
 Listens for Art-Net, E1.31 and DDP at once. The end-to-end pair with [Network Send](drivers.md).
 
+<a id="fseqplayer"></a>
+
+### FseqPlayer 🎞️ · 3D
+
+<img src="../../assets/light/effects/FseqPlayerEffect.gif" width="300" alt="FseqPlayer effect preview">
+
+Plays pre-rendered FSEQ animations from the SD card, with a playlist and the standard transport (play/pause/stop/previous/next, shuffle, loop-one/all/off). FSEQ carries no pixel semantics of its own, so this effect maps each frame's byte stream onto the layer buffer in channel order, 2D and 3D alike. Zlib-compressed files decode via the ESP32 ROM at no flash cost; zstd is not yet supported.
+
+- `play`, `pause`, `stop`, `previous`, `next`: the transport.
+- `shuffle`: advance to a random track instead of playlist order.
+- `loopMode`: `off` (stop after one pass), `one` (repeat), `all` (loop forever).
+- `fps`: the playback rate (1-120, default 30); the file's own rate is unused.
+- `playlist`: the tracks to play, picked from any file found on the card.
+- `position`: the current track's frame position.
+- `rescan`: re-scan the whole SD card for new or removed `.fseq` files.
+
+Origin: MoonLight original, on the Falcon Player/xLights [FSEQ format](https://github.com/FalconChristmas/fpp/blob/master/docs/FSEQ_Sequence_File_Format.txt)
+
+Detail: [technical](moxygen/FseqPlayerEffect.md)
+
+[Tests](../../reference/tests/unit-tests.md#fseqplayereffect)
+
 <a id="sine"></a>
 
 ### Sine 💫 · 3D

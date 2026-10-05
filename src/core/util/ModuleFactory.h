@@ -43,18 +43,20 @@ public:
         for (uint8_t i = 0; i < count_; i++)
             if (std::strcmp(types_[i].name, typeName) == 0) return true;
         if (!grow()) return false;
-        T probe;
+        // Heap, not a stack local: FseqPlayerEffect (7KB+) built as a plain local blew the shared main task's stack during registration.
+        T* probe = new T();
         uint8_t dim = 0;
         if constexpr (requires(const T& t) { static_cast<uint8_t>(t.dimensions()); }) {
-            dim = static_cast<uint8_t>(probe.dimensions());
+            dim = static_cast<uint8_t>(probe->dimensions());
         }
         types_[count_++] = {typeName,
                             []() -> MoonModule* { return new T(); },
-                            sizeof(T), probe.role(),
+                            sizeof(T), probe->role(),
                             docPath ? docPath : "",
-                            probe.tags() ? probe.tags() : "",
+                            probe->tags() ? probe->tags() : "",
                             dim,
-                            probe.acceptsChildRoles() ? probe.acceptsChildRoles() : ""};
+                            probe->acceptsChildRoles() ? probe->acceptsChildRoles() : ""};
+        delete probe;
         return true;
     }
 
