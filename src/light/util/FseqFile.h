@@ -16,7 +16,7 @@ enum class ParseError : uint8_t {
     None,
     BadMagic,                 ///< first 4 bytes are not "PSEQ"/"FSEQ"
     UnsupportedVersion,       ///< major version is neither 1 nor 2
-    UnsupportedCompression,   ///< zstd (type 1): no decoder exists in this build, not a malformed file
+    UnsupportedCompression,   ///< the compression-type byte names no recognized value, not a malformed file
     TooManySparseRanges,      ///< non-fatal: the table was clipped to kMaxSparseRanges and parsed anyway
     Truncated,                ///< buffer ends before a field/table this header claims to have
     Empty,                    ///< 0 channels or 0 frames: a real header, nothing to play
@@ -92,11 +92,11 @@ inline ParseError parseV2Tail(const uint8_t* buf, size_t len, FseqHeader& out) {
 
     switch (compressionByte) {
         case 0: out.compressionType = CompressionType::None; break;
+        case 1: out.compressionType = CompressionType::Zstd; break;
         case 2: out.compressionType = CompressionType::Zlib; break;
-        default: out.compressionType = CompressionType::Zstd; break;   // 1, or any reserved value
+        default: return ParseError::UnsupportedCompression;   // a genuinely reserved byte value
     }
 
-    if (out.compressionType == CompressionType::Zstd) return ParseError::UnsupportedCompression;
     if (sparseCountRaw > kMaxSparseRanges) return ParseError::TooManySparseRanges;
     return ParseError::None;
 }

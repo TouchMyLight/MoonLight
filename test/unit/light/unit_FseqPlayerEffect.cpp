@@ -130,6 +130,23 @@ std::vector<uint8_t> makeFseqV2ZlibBytes(uint32_t channelCount, uint32_t frameCo
     return b;
 }
 
+// A v2 file declaring zstd compression, with `blockCount` (empty) entries in its compression block table, the same shape as makeFseqV2ZlibBytes.
+std::vector<uint8_t> makeFseqV2ZstdBytes(uint32_t channelCount, uint32_t frameCount, uint8_t blockCount) {
+    const size_t channelDataOffset = 32 + static_cast<size_t>(blockCount) * 8;
+    std::vector<uint8_t> b(channelDataOffset + static_cast<size_t>(channelCount) * frameCount, 0);
+    std::memcpy(b.data(), "PSEQ", 4);
+    b[4] = static_cast<uint8_t>(channelDataOffset & 0xFF);
+    b[5] = static_cast<uint8_t>(channelDataOffset >> 8);
+    b[6] = 0; b[7] = 2;   // minor=0, major=2
+    for (int i = 0; i < 4; i++) b[10 + i] = static_cast<uint8_t>(channelCount >> (8 * i));
+    for (int i = 0; i < 4; i++) b[14 + i] = static_cast<uint8_t>(frameCount >> (8 * i));
+    b[18] = 25;
+    b[20] = 1;   // compressionType = zstd
+    b[21] = blockCount;
+    b[22] = 0;   // sparseRangeCount
+    return b;
+}
+
 // Two tracks written, scanned and added as playlist rows, for the two tests exercising a second row.
 void twoTrackPlaylist(SdFixture& sd, FseqPlayerEffect& e, uint32_t& id1, uint32_t& id2) {
     sd.writeFseq("/sd/a.fseq", makeFseqV1Bytes(10, 2));
@@ -520,7 +537,16 @@ TEST_CASE("a zlib file fails to load on desktop with its own status, not a gener
 }
 
 TEST_CASE("a zlib file declaring no compression blocks is refused by name, before the platform check") {
-    expectRefused("/sd/z0.fseq", makeFseqV2ZlibBytes(/*channelCount=*/10, /*frameCount=*/5, /*blockCount=*/0), "zlib file declares no compression blocks");
+    expectRefused("/sd/z0.fseq", makeFseqV2ZlibBytes(/*channelCount=*/10, /*frameCount=*/5, /*blockCount=*/0), "compressed file declares no compression blocks");
+}
+
+// Desktop always has platform::hasZstd false, which exercises loadTrack's real capability-rejection branch. The header parses clean; rejection is about usability, not parsing.
+TEST_CASE("a zstd file fails to load without the build's zstd option, not a generic read failure") {
+    expectRefused("/sd/zs.fseq", makeFseqV2ZstdBytes(/*channelCount=*/10, /*frameCount=*/5, /*blockCount=*/2), "zstd FSEQ needs this build's zstd option enabled");
+}
+
+TEST_CASE("a zstd file declaring no compression blocks is refused by the same name a zlib one gets") {
+    expectRefused("/sd/zs0.fseq", makeFseqV2ZstdBytes(/*channelCount=*/10, /*frameCount=*/5, /*blockCount=*/0), "compressed file declares no compression blocks");
 }
 
 TEST_CASE("a scanned name past kPathCap is skipped, not truncated into a different file, with a named warning") {

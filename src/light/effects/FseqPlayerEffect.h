@@ -4,9 +4,10 @@
 #include "light/effects/EffectBase.h"
 
 #include "light/util/FseqFile.h"     // the FSEQ header/sparse-range parser this effect plays back
-#include "platform/platform.h"       // fsReadStreamXxx, fsList, zlibInflateAll
+#include "platform/platform.h"       // fsReadStreamXxx, fsList, zlibInflateAll, zstdInflateAll
 #include "core/util/JsonSink.h"      // the playlist's own ListSource serialization
 #include "core/util/JsonUtil.h"      // restoreList: recursive reader for the persisted playlist
+#include "core/util/ZstdFrameHeader.h"   // buildZstdFrameHeader: FSEQ's own headerless zstd blocks need one synthesized
 
 #include <cstdio>
 #include <cstdlib>   // qsort: the picker's file order
@@ -23,11 +24,11 @@ namespace mm {
 ///
 /// @guide
 ///
-/// ## Compressed files need ESP32
+/// ## Compressed files need a decoder linked in
 ///
-/// A zlib-compressed FSEQ (xLights/FPP's default) plays only on ESP32 boards; desktop and Teensy builds show a clean error instead of playing it.
+/// A zlib-compressed FSEQ (xLights/FPP's default) plays only on ESP32, whose ROM carries the decoder; desktop and Teensy both show a clean error instead of playing it.
 ///
-/// Zstd-compressed files do not play on any target yet.
+/// A zstd-compressed FSEQ needs its own opt-in build flag too, off by default on both ESP32 (`CONFIG_MM_ZSTD`) and Teensy (`MM_ZSTD`); desktop never carries the decoder.
 ///
 /// Export a track uncompressed if it needs to play everywhere.
 class FseqPlayerEffect : public EffectBase, public ListSource {
@@ -263,7 +264,7 @@ public:
     }
     /// The scratch bytes held right now across every runtime buffer: zero once released.
     size_t scratchBytesForTest() const {
-        return fileNames_.bytes() + headBuf_.bytes() + frameBuf_.bytes() + expandBuf_.bytes() + compBuf_.bytes() + blockBuf_.bytes() + zlibWork_.bytes();
+        return fileNames_.bytes() + headBuf_.bytes() + frameBuf_.bytes() + expandBuf_.bytes() + compBuf_.bytes() + blockBuf_.bytes() + zlibWork_.bytes() + zstdWork_.bytes();
     }
     /// Force the transport state directly.
     void setStateForTest(PlayState s) { state_ = s; }
@@ -343,9 +344,10 @@ private:
     ChannelDataSink sink_{*this};               ///< where the decoded frame lands, held and placed in wiring order
     ScratchBuffer<uint8_t> frameBuf_{*this};    ///< the one decoded frame, read straight off the file or a compression block
     ScratchBuffer<uint8_t> expandBuf_{*this};   ///< a sparse frame expanded to the sink's own size, before the one write into it
-    ScratchBuffer<uint8_t> compBuf_{*this};     ///< one compression block's compressed bytes
+    ScratchBuffer<uint8_t> compBuf_{*this};     ///< one compression block's compressed bytes, with kMaxZstdFrameHeaderBytes of leading headroom on a zstd track
     ScratchBuffer<uint8_t> blockBuf_{*this};    ///< that block, decompressed
     ScratchBuffer<uint8_t> zlibWork_{*this};    ///< the decoder's state, lent to platform::zlibInflateAll for a zlib track
+    ScratchBuffer<uint8_t> zstdWork_{*this};    ///< the decoder's state, lent to platform::zstdInflateAll for a zstd track
     uint32_t currentBlockIndex_ = 0;           ///< which compression-block-table entry is loaded
     uint32_t currentBlockFirstFrame_ = 0;      ///< that block's first frame
     uint32_t currentBlockFrameCount_ = 0;      ///< how many frames blockBuf_ covers
@@ -591,16 +593,20 @@ private:
         switch (err) {
             case fseq::ParseError::BadMagic:               errMsg = "not an FSEQ file"; break;
             case fseq::ParseError::UnsupportedVersion:     errMsg = "unsupported FSEQ version"; break;
-            case fseq::ParseError::UnsupportedCompression: errMsg = "compressed (zstd) FSEQ not supported yet"; break;
+            case fseq::ParseError::UnsupportedCompression: errMsg = "unrecognized FSEQ compression type"; break;
             case fseq::ParseError::Truncated:              errMsg = "FSEQ header truncated or unreadable"; break;
             case fseq::ParseError::Empty:                  errMsg = "empty show: 0 channels or frames"; break;
             default: break;   // None, or TooManySparseRanges (non-fatal, handled below)
         }
-        if (!errMsg && hdr.compressionType == fseq::CompressionType::Zlib && hdr.compressionBlockCount == 0) {
-            errMsg = "zlib file declares no compression blocks";
+        if (!errMsg && (hdr.compressionType == fseq::CompressionType::Zlib || hdr.compressionType == fseq::CompressionType::Zstd)
+                    && hdr.compressionBlockCount == 0) {
+            errMsg = "compressed file declares no compression blocks";
         }
         if (!errMsg && hdr.compressionType == fseq::CompressionType::Zlib && !platform::hasZlibInflate) {
             errMsg = "zlib plays on ESP32 only";
+        }
+        if (!errMsg && hdr.compressionType == fseq::CompressionType::Zstd && !platform::hasZstd) {
+            errMsg = "zstd FSEQ needs this build's zstd option enabled";
         }
         if (errMsg) return failLoad(errMsg);
         header_ = hdr;
@@ -627,7 +633,9 @@ private:
     /// Size the block buffers and decoder workspace once for the track's largest block, so the 50 Hz path never allocates.
     bool sizeBlockBuffers() {
         size_t maxCompressed = 0, maxDecompressed = 0;
-        if (header_.compressionType == fseq::CompressionType::Zlib) {
+        const bool zlib = header_.compressionType == fseq::CompressionType::Zlib;
+        const bool zstd = header_.compressionType == fseq::CompressionType::Zstd;
+        if (zlib || zstd) {
             for (uint32_t i = 0; i < header_.compressionBlockCount; i++) {
                 uint32_t firstFrame = 0, byteLen = 0, frames = 0;
                 size_t decompLen = 0;
@@ -636,8 +644,11 @@ private:
                 if (decompLen > maxDecompressed) maxDecompressed = decompLen;
             }
         }
-        const bool zlib = header_.compressionType == fseq::CompressionType::Zlib;
-        return compBuf_.resize(maxCompressed) && blockBuf_.resize(maxDecompressed) && zlibWork_.resize(zlib ? platform::zlibWorkspaceBytes() : 0);
+        // A zstd block's bytes sit kMaxZstdFrameHeaderBytes into compBuf_: FSEQ's own blocks are headerless, so the gap holds the frame header this synthesizes before calling the (generic) platform::zstdInflateAll.
+        const size_t headerRoom = zstd ? kMaxZstdFrameHeaderBytes : 0;
+        return compBuf_.resize(maxCompressed + headerRoom) && blockBuf_.resize(maxDecompressed)
+            && zlibWork_.resize(zlib ? platform::zlibWorkspaceBytes() : 0)
+            && zstdWork_.resize(zstd ? platform::zstdWorkspaceBytes() : 0);
     }
 
     /// Size the sparse expansion buffer to the sink, once per track and per layer resize; a dense track frees it.
@@ -658,7 +669,7 @@ private:
 
     /// Decode frame `frameIndex_` into `frameBuf_`, one tick ahead of its render. The one blocking read `tick20ms` makes, bounded to one frame or block.
     bool decodeCurrentFrame() {
-        if (header_.compressionType == fseq::CompressionType::Zlib) {
+        if (header_.compressionType == fseq::CompressionType::Zlib || header_.compressionType == fseq::CompressionType::Zstd) {
             const char* why = nullptr;
             const uint8_t* rawFrame = frameFromCompressedBlock(frameIndex_, why);
             if (!rawFrame) return failLoad(why);
@@ -708,12 +719,26 @@ private:
     const char* loadNextBlock() {
         uint32_t firstFrame = 0, byteLen = 0, frames = 0;
         size_t decompLen = 0;
-        if (!blockExtent(currentBlockIndex_, firstFrame, byteLen, frames, decompLen) || byteLen > compBuf_.bytes() || decompLen > blockBuf_.bytes())
+        const bool zstd = header_.compressionType == fseq::CompressionType::Zstd;
+        const size_t headerRoom = zstd ? kMaxZstdFrameHeaderBytes : 0;
+        if (!blockExtent(currentBlockIndex_, firstFrame, byteLen, frames, decompLen) || byteLen + headerRoom > compBuf_.bytes() || decompLen > blockBuf_.bytes())
             return "FSEQ block table entry invalid";
-        if (!readBytes(compBuf_.data(), byteLen)) return "file read failed mid-file";
+        if (!readBytes(compBuf_.data() + headerRoom, byteLen)) return "file read failed mid-file";
         size_t outLen = 0;
-        if (!platform::zlibInflateAll(zlibWork_.data(), compBuf_.data(), byteLen, blockBuf_.data(), decompLen, outLen) || outLen != decompLen)
-            return "compressed block does not match its declared size";
+        bool ok;
+        if (zstd) {
+            // FSEQ's own zstd blocks are headerless (FPP/xLights' writer omits the frame header); platform::zstdInflateAll
+            // is generic and expects one complete frame, so the minimal RFC 8878 header is synthesized right before the
+            // block's bytes, into the headroom sizeBlockBuffers() reserved, then both are handed over as one run.
+            uint8_t hdr[kMaxZstdFrameHeaderBytes];
+            const size_t hdrLen = buildZstdFrameHeader(decompLen, hdr);
+            uint8_t* framed = compBuf_.data() + headerRoom - hdrLen;
+            std::memcpy(framed, hdr, hdrLen);
+            ok = platform::zstdInflateAll(zstdWork_.data(), framed, hdrLen + byteLen, blockBuf_.data(), decompLen, outLen);
+        } else {
+            ok = platform::zlibInflateAll(zlibWork_.data(), compBuf_.data(), byteLen, blockBuf_.data(), decompLen, outLen);
+        }
+        if (!ok || outLen != decompLen) return "compressed block does not match its declared size";
 
         currentBlockFirstFrame_ = firstFrame;
         currentBlockFrameCount_ = frames;
