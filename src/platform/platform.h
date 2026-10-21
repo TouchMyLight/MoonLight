@@ -344,6 +344,11 @@ bool zlibInflateAll(void* workspace, const uint8_t* src, size_t srcLen, uint8_t*
 /// The bytes of decoder state the caller lends `zlibInflateAll` as its `workspace`, held only while it plays zlib; 0 where no decoder is linked.
 size_t zlibWorkspaceBytes();
 
+/// Inflate one complete, standard zstd frame in one call; `outLen` is set only on success. Generic, not FSEQ-specific: a headerless block needs its frame header synthesized by the caller first. Needs `CONFIG_MM_ZSTD`; stubs to false elsewhere.
+bool zstdInflateAll(void* workspace, const uint8_t* src, size_t srcLen, uint8_t* dst, size_t dstCap, size_t& outLen);
+/// The bytes of decoder state the caller lends `zstdInflateAll` as its `workspace`; 0 where no decoder is linked.
+size_t zstdWorkspaceBytes();
+
 // A second, independent mount (microSD, FAT) sharing the fsXxx surface above through its own `/sd` path prefix; inert wherever hasSdCard is false.
 
 /// Whether `path` names the filesystem's root: "" or "/", the two forms a listing of the root arrives as.

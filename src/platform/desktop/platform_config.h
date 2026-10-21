@@ -129,6 +129,8 @@ constexpr bool previewsSdPresets = true;
 
 /// False: no zlib decoder is linked here; `zlibInflateAll` is a stub.
 constexpr bool hasZlibInflate = false;
+/// No decoder linked on desktop; see src/platform/esp32/platform_config.h for the real gate.
+constexpr bool hasZstd = false;
 
 } // namespace mm::platform
 

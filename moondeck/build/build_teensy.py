@@ -56,6 +56,12 @@ def main():
     # A release burns its channel and computed version in, as build_esp32.py does; a local build leaves both empty.
     parser.add_argument("--release", default="", help="the release channel tag, e.g. latest or v1.0.0")
     parser.add_argument("--version", default="", help="the computed semver (compute_version.py)")
+    parser.add_argument("--zstd", action="store_true", dest="zstd",
+                        help="Link the zstd decoder (platform::zstdInflateAll), generic and not tied to "
+                             "FseqPlayerEffect though it is the one caller today. Measured on an "
+                             "esp32p4rev1-eth build: ~43KB flash, plus 117KB heap while a block is open "
+                             "-- over a tenth of this board's 1MB RAM. Off by default, the same opt-in "
+                             "ESP32's own CONFIG_MM_ZSTD Kconfig option makes.")
     add_firmware_arg(parser)
     args = parser.parse_args()
     build_dir = hex_path(args.firmware).parent
@@ -67,6 +73,7 @@ def main():
                         f"-DTEENSY_SDK={sdk_root()}", f"-DTEENSY_GCC_BIN={gcc_bin()}",
                         f"-DTEENSYDUINO={teensyduino_define()}",
                         f"-DMM_FIRMWARE={args.firmware}",
+                        f"-DMM_ZSTD={'ON' if args.zstd else 'OFF'}",
                         f"-DMM_RELEASE={args.release}", f"-DMM_VERSION={args.version}"], cwd=ROOT)
     if r.returncode != 0:
         sys.exit(r.returncode)

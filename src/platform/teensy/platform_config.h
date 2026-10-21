@@ -108,8 +108,14 @@ constexpr bool hasSdCard = true;
 /// False: SdCardService offers only the socket this board wires.
 constexpr bool previewsSdPresets = false;
 
-/// False: no zlib decoder is linked here; `zlibInflateAll` is a stub.
+/// False: no zlib decoder is linked here (it is ESP32 ROM-resident); `zlibInflateAll` is a stub.
 constexpr bool hasZlibInflate = false;
+/// The vendored zstd decoder is portable C, not chip-specific, so it is available here too: `teensy/CMakeLists.txt`'s own `MM_ZSTD` option gates it, off by default like ESP32's Kconfig one.
+#if defined(CONFIG_MM_ZSTD)
+constexpr bool hasZstd = true;
+#else
+constexpr bool hasZstd = false;
+#endif
 
 /// The bits a call to emitted code adds to its address. Thumb state: a Cortex-M7 runs only Thumb code, and a call address carries it in bit 0.
 constexpr uintptr_t codeAddressBits = 1;

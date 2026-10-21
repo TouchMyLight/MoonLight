@@ -9,6 +9,12 @@ set(CORE "${TEENSY_SDK}/cores/teensy4")
 
 find_program(UV_EXECUTABLE NAMES uv REQUIRED HINTS "$ENV{HOME}/.local/bin")
 
+# Off by default, like ESP32's own Kconfig opt-in (CONFIG_MM_ZSTD): measured on an esp32p4rev1-eth build, the decoder
+# costs ~43KB flash plus 117KB heap while a block is open (the static ZSTD_DCtx) -- over a tenth of this board's 1MB
+# RAM, so it is worth paying only when something needs it. Generic (platform::zstdInflateAll), not tied to any one
+# caller; FseqPlayerEffect is the first.
+option(MM_ZSTD "Link the generic zstd decoder (platform::zstdInflateAll)" OFF)
+
 # The SDK's include paths are SYSTEM, so the application's -Werror covers MoonLight's code and not the vendors' headers.
 # PJRC's core: startup, USB serial, timing, and main(), which calls setup() and loop().
 file(GLOB CORE_SOURCES "${CORE}/*.c" "${CORE}/*.cpp" "${CORE}/*.S")
@@ -119,9 +125,16 @@ add_executable(MoonLight.elf
     ${REPO}/src/platform/teensy/platform_teensy_gpio_dma.cpp
     ${REPO}/src/platform/teensy/platform_teensy_ota.cpp
     ${REPO}/src/platform/teensy/platform_teensy_improv.cpp
+    ${REPO}/src/platform/zstd_decode.cpp
+    ${REPO}/src/platform/vendor/zstddeclib.c
 )
 add_dependencies(MoonLight.elf build_info_gen ui_embed moonlive_catalog)
 target_include_directories(MoonLight.elf PRIVATE ${REPO}/src ${REPO}/src/platform/teensy)
+# zstddeclib.c and zstd_decode.cpp are always in the source list, each wrapped in its own #if CONFIG_MM_ZSTD,
+# so leaving the option off (the default) compiles both to their empty/stub shape, the same as on ESP32.
+if(MM_ZSTD)
+    target_compile_definitions(MoonLight.elf PRIVATE CONFIG_MM_ZSTD)
+endif()
 target_compile_options(MoonLight.elf PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20> -Wall -Wextra -Werror)
 target_compile_definitions(MoonLight.elf PRIVATE MM_FIRMWARE_NAME="${MM_FIRMWARE}")
 # A release passes its channel and version; empty leaves build_info.h's defaults, as on the ESP32.

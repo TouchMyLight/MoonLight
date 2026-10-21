@@ -64,4 +64,18 @@ menu "MoonLight"
             Compiles the FatFs SD card backend, on every chip with an SD host and
             more than 4 MB of flash: the 4 MB layout's fragment sets it off.
 
+    config MM_ZSTD
+        bool "zstd decompression"
+        default n
+        help
+            Pulls a zstd decoder any module can call through platform::zstdInflateAll,
+            the same shape zlibInflateAll takes. FseqPlayerEffect uses it today, for
+            FSEQ v2 files whose compression blocks are zstd (type 1) rather than
+            zlib. OFF by default everywhere: measured on an esp32p4rev1-eth build,
+            the decoder adds about 43KB of flash, plus 117KB of heap while a block
+            is actually open (the static ZSTD_DCtx; freed between tracks), far
+            above zlib's zero-flash, ~2.5KB ROM call. Worth it on a board with
+            flash and PSRAM to spare, such as the ESP32-P4; a board already tight
+            on heap should leave this off.
+
 endmenu

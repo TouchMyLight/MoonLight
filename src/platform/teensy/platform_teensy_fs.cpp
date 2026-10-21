@@ -15,7 +15,7 @@ extern unsigned long _flashimagelen;
 
 namespace mm::platform {
 
-// No zlib/zstd decoder on Teensy: FseqPlayerEffect's compressed-block path never succeeds here.
+// No zlib decoder on Teensy (it is ESP32 ROM-resident): a zlib FSEQ never plays here. zstd is different: src/platform/zstd_decode.cpp (portable, vendored C) links in for real, same as on ESP32.
 bool zlibInflateAll(void*, const uint8_t*, size_t, uint8_t*, size_t, size_t&) { return false; }
 size_t zlibWorkspaceBytes() { return 0; }
 
